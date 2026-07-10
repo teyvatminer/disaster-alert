@@ -3,14 +3,14 @@ use crate::db::Database;
 use crate::models::{
     CommonEarthquakeInfo, EarthquakeData, Subscription, WebSocketMessage, mask_bark_id,
 };
-use crate::services::{AlertTiming, BarkNotifier};
+use crate::services::{AlertRecipient, AlertTiming, BarkNotifier};
 use crate::utils::{distance, geohash, intensity};
 use anyhow::Result;
 use futures_util::{StreamExt, stream};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Clone)]
@@ -35,12 +35,24 @@ struct SeenEvent {
     at: Instant,
 }
 
+struct PushTarget {
+    recipient: AlertRecipient,
+    level: String,
+    timing: AlertTiming,
+}
+
+#[derive(Default)]
+struct NotifyCounts {
+    filtered: usize,
+    notified: usize,
+    errors: usize,
+}
+
 /// 监听 EEW WebSocket，并把匹配订阅的事件转成 Bark 推送
 pub struct EarthquakeMonitor {
     db: Database,
     bark_notifier: BarkNotifier,
     max_concurrent: usize,
-    semaphore: Arc<Semaphore>,
     config: MonitorConfig,
     seen_events: Arc<Mutex<HashMap<String, SeenEvent>>>,
 }
@@ -48,7 +60,6 @@ pub struct EarthquakeMonitor {
 impl EarthquakeMonitor {
     pub fn new(db: Database, config: Config, bark_notifier: BarkNotifier) -> Result<Self> {
         let max_concurrent = config.max_concurrent_notifications.max(1);
-        let semaphore = Arc::new(Semaphore::new(max_concurrent));
         let monitor_config = MonitorConfig {
             websocket_url: config.eew_websocket_url.clone(),
             reconnect_min: Duration::from_secs(config.reconnect_min_seconds.max(1)),
@@ -88,7 +99,6 @@ impl EarthquakeMonitor {
             db,
             bark_notifier,
             max_concurrent,
-            semaphore,
             config: monitor_config,
             seen_events: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -261,14 +271,87 @@ impl EarthquakeMonitor {
             "notify.lookup_started"
         );
 
-        let store = self.db.subscriptions();
-        let subscriptions =
-            tokio::task::spawn_blocking(move || {
-                store.get_subscriptions_by_geohashes(&neighbor_geohashes)
-            })
-            .await??;
+        let channel_capacity = self.max_concurrent.clamp(1, 10_000);
+        let (target_sender, target_receiver) = mpsc::channel::<PushTarget>(channel_capacity);
 
-        let total_candidates = subscriptions.len();
+        let store = self.db.subscriptions();
+        let config = self.config.clone();
+        let earthquake_for_lookup = earthquake.clone();
+        let lookup_handle = tokio::task::spawn_blocking(move || {
+            let mut total_candidates = 0usize;
+            store.for_each_subscription_by_geohashes(&neighbor_geohashes, |subscription| {
+                total_candidates += 1;
+                if let Some(target) =
+                    evaluate_subscription(&config, &subscription, &earthquake_for_lookup)
+                {
+                    target_sender.blocking_send(target).map_err(|error| {
+                        anyhow::anyhow!("notification target receiver closed: {error}")
+                    })?;
+                }
+                Ok(())
+            })?;
+            Ok::<_, anyhow::Error>(total_candidates)
+        });
+
+        let bark_notifier = self.bark_notifier.clone();
+        let earthquake = Arc::new(earthquake.clone());
+
+        let target_stream = stream::unfold(target_receiver, |mut receiver| async move {
+            receiver.recv().await.map(|target| (target, receiver))
+        });
+
+        let counts = target_stream
+            .map(|target| {
+                let bark_notifier = bark_notifier.clone();
+                let earthquake = Arc::clone(&earthquake);
+
+                async move {
+                    let bark_id = target.recipient.bark_id.clone();
+                    tracing::debug!(
+                        event = "notify.send_started",
+                        bark_id = %mask_bark_id(&bark_id),
+                        distance_km = target.timing.distance_km,
+                        estimated_intensity = target.timing.estimated_intensity,
+                        level = %target.level,
+                        "notify.send_started"
+                    );
+
+                    match bark_notifier
+                        .send_earthquake_alert(
+                            &target.recipient,
+                            &target.level,
+                            earthquake.as_ref(),
+                            &target.timing,
+                        )
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(e) => {
+                            tracing::error!(
+                                event = "notify.send_failed",
+                                bark_id = %mask_bark_id(&bark_id),
+                                error = ?e,
+                                "notify.send_failed"
+                            );
+                            false
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(self.max_concurrent)
+            .fold(NotifyCounts::default(), |mut counts, success| async move {
+                counts.filtered += 1;
+                if success {
+                    counts.notified += 1;
+                } else {
+                    counts.errors += 1;
+                }
+                counts
+            })
+            .await;
+
+        let total_candidates = lookup_handle.await??;
+
         tracing::info!(
             event = "notify.candidates_loaded",
             event_key = %event_key,
@@ -286,26 +369,15 @@ impl EarthquakeMonitor {
             return Ok(());
         }
 
-        let mut notification_tasks = Vec::with_capacity(total_candidates);
-
-        for subscription in subscriptions {
-            if let Some((selected, level, timing)) =
-                self.evaluate_subscription(&subscription, earthquake)
-            {
-                notification_tasks.push((selected, level, timing));
-            }
-        }
-
-        let tasks_count = notification_tasks.len();
         tracing::info!(
             event = "notify.filtered",
             event_key = %event_key,
-            notification_count = tasks_count,
-            filtered_count = total_candidates - tasks_count,
+            notification_count = counts.filtered,
+            filtered_count = total_candidates.saturating_sub(counts.filtered),
             "notify.filtered"
         );
 
-        if tasks_count == 0 {
+        if counts.filtered == 0 {
             tracing::info!(
                 event = "notify.skipped",
                 event_key = %event_key,
@@ -315,76 +387,17 @@ impl EarthquakeMonitor {
             return Ok(());
         }
 
-        let bark_notifier = self.bark_notifier.clone();
-        let semaphore = self.semaphore.clone();
-        let earthquake = earthquake.clone();
-
-        let results = stream::iter(notification_tasks)
-            .map(|(subscription, level, timing)| {
-                let bark_notifier = bark_notifier.clone();
-                let semaphore = semaphore.clone();
-                let earthquake = earthquake.clone();
-
-                async move {
-                    let bark_id = subscription.bark_id.clone();
-                    let permit = semaphore.acquire_owned().await;
-                    let permit_guard: OwnedSemaphorePermit = match permit {
-                        Ok(permit) => permit,
-                        Err(error) => {
-                            tracing::error!(
-                                event = "notify.permit_failed",
-                                error = ?error,
-                                "notify.permit_failed"
-                            );
-                            return (bark_id, false, None);
-                        }
-                    };
-                    let _permit_guard = permit_guard;
-
-                    tracing::debug!(
-                        event = "notify.send_started",
-                        bark_id = %mask_bark_id(&bark_id),
-                        distance_km = timing.distance_km,
-                        estimated_intensity = timing.estimated_intensity,
-                        level = %level,
-                        "notify.send_started"
-                    );
-
-                    match bark_notifier
-                        .send_earthquake_alert(&subscription, &level, &earthquake, &timing)
-                        .await
-                    {
-                        Ok(_) => (bark_id, true, None),
-                        Err(e) => {
-                            tracing::error!(
-                                event = "notify.send_failed",
-                                bark_id = %mask_bark_id(&bark_id),
-                                error = ?e,
-                                "notify.send_failed"
-                            );
-                            (bark_id, false, Some(e))
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(self.max_concurrent)
-            .collect::<Vec<_>>()
-            .await;
-
-        let notified_count = results.iter().filter(|(_, success, _)| *success).count();
-        let error_count = results.iter().filter(|(_, success, _)| !*success).count();
-
         let elapsed = start_time.elapsed();
 
         tracing::info!(
             event = "notify.completed",
             event_key = %event_key,
             candidate_count = total_candidates,
-            notified_count,
-            error_count,
+            notified_count = counts.notified,
+            error_count = counts.errors,
             elapsed_seconds = elapsed.as_secs_f64(),
             throughput_per_second = if elapsed.as_secs_f64() >= 0.001 {
-                notified_count as f64 / elapsed.as_secs_f64()
+                counts.notified as f64 / elapsed.as_secs_f64()
             } else {
                 0.0
             },
@@ -466,56 +479,53 @@ impl EarthquakeMonitor {
             },
         );
     }
+}
 
-    fn evaluate_subscription(
-        &self,
-        subscription: &Subscription,
-        earthquake: &CommonEarthquakeInfo,
-    ) -> Option<(Subscription, String, AlertTiming)> {
-        let mut best: Option<(Subscription, String, AlertTiming)> = None;
-        for location in subscription.normalized_locations() {
-            let dist = distance::vincenty_distance(
-                earthquake.latitude,
-                earthquake.longitude,
-                location.latitude,
-                location.longitude,
-            )?;
-            if self.config.max_distance_km > 0.0 && dist > self.config.max_distance_km {
-                continue;
-            }
-            let hypocentral_km = (dist.powi(2) + earthquake.depth.max(0.0).powi(2)).sqrt();
-            let estimated_intensity =
-                intensity::estimate_intensity(earthquake.magnitude, hypocentral_km);
-            let level = subscription.level_for_intensity(estimated_intensity)?;
-            let timing = AlertTiming {
-                distance_km: dist,
-                hypocentral_km,
-                estimated_intensity,
-                seconds_to_p: seconds_until_arrival(
-                    earthquake,
-                    hypocentral_km,
-                    self.config.p_wave_km_s,
-                ),
-                seconds_to_s: seconds_until_arrival(
-                    earthquake,
-                    hypocentral_km,
-                    self.config.s_wave_km_s,
-                ),
-            };
-            let mut selected = subscription.clone();
-            selected.location_name = location.name;
-            selected.latitude = location.latitude;
-            selected.longitude = location.longitude;
-            let replace = best
-                .as_ref()
-                .map(|(_, _, current)| timing.distance_km < current.distance_km)
-                .unwrap_or(true);
-            if replace {
-                best = Some((selected, level, timing));
-            }
+fn evaluate_subscription(
+    config: &MonitorConfig,
+    subscription: &Subscription,
+    earthquake: &CommonEarthquakeInfo,
+) -> Option<PushTarget> {
+    let mut best: Option<PushTarget> = None;
+    for location in subscription.normalized_locations() {
+        let dist = distance::vincenty_distance(
+            earthquake.latitude,
+            earthquake.longitude,
+            location.latitude,
+            location.longitude,
+        )?;
+        if config.max_distance_km > 0.0 && dist > config.max_distance_km {
+            continue;
         }
-        best
+        let hypocentral_km = (dist.powi(2) + earthquake.depth.max(0.0).powi(2)).sqrt();
+        let estimated_intensity =
+            intensity::estimate_intensity(earthquake.magnitude, hypocentral_km);
+        let level = subscription.level_for_intensity(estimated_intensity)?;
+        let timing = AlertTiming {
+            distance_km: dist,
+            hypocentral_km,
+            estimated_intensity,
+            seconds_to_p: seconds_until_arrival(earthquake, hypocentral_km, config.p_wave_km_s),
+            seconds_to_s: seconds_until_arrival(earthquake, hypocentral_km, config.s_wave_km_s),
+        };
+        let replace = best
+            .as_ref()
+            .map(|current| timing.distance_km < current.timing.distance_km)
+            .unwrap_or(true);
+        if replace {
+            best = Some(PushTarget {
+                recipient: AlertRecipient {
+                    bark_id: subscription.bark_id.clone(),
+                    location_name: location.name,
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                },
+                level,
+                timing,
+            });
+        }
     }
+    best
 }
 
 fn earthquake_key(earthquake: &CommonEarthquakeInfo) -> String {
@@ -651,9 +661,18 @@ mod tests {
 
     #[test]
     fn rejects_malformed_and_impossible_dates() {
-        assert_eq!(parse_datetime_epoch_seconds("2026-XX-07 09:30:00", 8 * 3600), None);
-        assert_eq!(parse_datetime_epoch_seconds("2026-02-30 09:30:00", 8 * 3600), None);
-        assert_eq!(parse_datetime_epoch_seconds("2026-04-31 09:30:00", 8 * 3600), None);
+        assert_eq!(
+            parse_datetime_epoch_seconds("2026-XX-07 09:30:00", 8 * 3600),
+            None
+        );
+        assert_eq!(
+            parse_datetime_epoch_seconds("2026-02-30 09:30:00", 8 * 3600),
+            None
+        );
+        assert_eq!(
+            parse_datetime_epoch_seconds("2026-04-31 09:30:00", 8 * 3600),
+            None
+        );
         assert!(parse_datetime_epoch_seconds("2024-02-29 09:30:00", 8 * 3600).is_some());
     }
 }

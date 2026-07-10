@@ -24,30 +24,15 @@ pub async fn subscribe_handler(
     State(state): State<AppState>,
     Json(payload): Json<SubscribeRequest>,
 ) -> impl IntoResponse {
-    if payload.bark_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<SubscribeResponse>::error("Bark ID 不能为空")),
-        );
-    }
-
-    if payload.bark_id.len() > 64 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<SubscribeResponse>::error(
-                "Bark ID 过长（最大64字符）",
-            )),
-        );
-    }
-
-    if !payload.bark_id.chars().all(|c| c.is_alphanumeric()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<SubscribeResponse>::error(
-                "Bark ID 只能包含字母、数字",
-            )),
-        );
-    }
+    let bark_id = match validate_bark_id(&payload.bark_id) {
+        Ok(value) => value,
+        Err((status, message)) => {
+            return (
+                status,
+                Json(ApiResponse::<SubscribeResponse>::error(message)),
+            );
+        }
+    };
 
     let bark_server = match normalize_bark_server(&payload.bark_server) {
         Ok(value) => value,
@@ -87,8 +72,7 @@ pub async fn subscribe_handler(
             );
         }
     };
-    let mut subscription =
-        Subscription::new(payload.bark_id.clone(), primary.latitude, primary.longitude);
+    let mut subscription = Subscription::new(bark_id, primary.latitude, primary.longitude);
     subscription.bark_server = bark_server;
     subscription.location_name = primary.name;
     subscription.locations = locations;
@@ -161,27 +145,12 @@ pub async fn unsubscribe_handler(
     State(state): State<AppState>,
     Json(payload): Json<UnsubscribeRequest>,
 ) -> impl IntoResponse {
-    let bark_id = payload.bark_id.trim().to_string();
-    if bark_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error("Bark ID 不能为空")),
-        );
-    }
-
-    if bark_id.len() > 64 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error("Bark ID 过长（最大64字符）")),
-        );
-    }
-
-    if !bark_id.chars().all(|c| c.is_alphanumeric()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error("Bark ID 只能包含字母、数字")),
-        );
-    }
+    let bark_id = match validate_bark_id(&payload.bark_id) {
+        Ok(value) => value,
+        Err((status, message)) => {
+            return (status, Json(ApiResponse::<()>::error(message)));
+        }
+    };
 
     tracing::info!(
         event = "subscription.delete_requested",
@@ -214,7 +183,10 @@ pub async fn unsubscribe_handler(
                 StoreErrorKind::NotFound => StatusCode::NOT_FOUND,
                 StoreErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            (status, Json(ApiResponse::<()>::error(format!("取消订阅失败: {}", e))))
+            (
+                status,
+                Json(ApiResponse::<()>::error(format!("取消订阅失败: {}", e))),
+            )
         }
     }
 }
@@ -310,6 +282,26 @@ fn normalize_bark_server(value: &str) -> Result<String, String> {
     }
     if parsed.host_str().is_none() || parsed.username() != "" || parsed.password().is_some() {
         return Err("Bark 服务器地址无效".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_bark_id(raw: &str) -> std::result::Result<String, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Bark ID 不能为空".to_string()));
+    }
+    if trimmed.len() > 64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Bark ID 过长（最大64字符）".to_string(),
+        ));
+    }
+    if !trimmed.chars().all(|c| c.is_alphanumeric()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Bark ID 只能包含字母、数字".to_string(),
+        ));
     }
     Ok(trimmed.to_string())
 }

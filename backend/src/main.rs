@@ -118,7 +118,10 @@ fn build_cors_layer(config: &Config) -> Result<CorsLayer> {
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
-        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION]);
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
 
     if origins.is_empty() {
         Ok(cors)

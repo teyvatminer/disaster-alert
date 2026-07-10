@@ -72,17 +72,20 @@ impl Subscription {
     }
 
     pub fn level_for_intensity(&self, estimated_intensity: u8) -> Option<String> {
-        let mut bands = self.notify_bands.iter().collect::<Vec<_>>();
-        bands.sort_by_key(|band| band.min);
-        bands
-            .into_iter()
-            .find(|band| {
-                let normalized = normalize_bark_level(&band.level);
-                validate_bark_level(&normalized)
-                    && estimated_intensity >= band.min
-                    && estimated_intensity <= band.max
-            })
-            .map(|band| normalize_bark_level(&band.level))
+        let mut selected: Option<&NotificationBand> = None;
+        for band in &self.notify_bands {
+            let normalized = normalize_bark_level(&band.level);
+            if validate_bark_level(&normalized)
+                && estimated_intensity >= band.min
+                && estimated_intensity <= band.max
+                && selected
+                    .map(|current| band.min < current.min)
+                    .unwrap_or(true)
+            {
+                selected = Some(band);
+            }
+        }
+        selected.map(|band| normalize_bark_level(&band.level))
     }
 }
 
@@ -570,12 +573,6 @@ impl GeoHashIndex {
         }
     }
 
-    pub fn add(&mut self, bark_id: String) {
-        if !self.bark_ids.contains(&bark_id) {
-            self.bark_ids.push(bark_id);
-        }
-    }
-
     pub fn remove(&mut self, bark_id: &str) {
         self.bark_ids.retain(|id| id != bark_id);
     }
@@ -584,5 +581,34 @@ impl GeoHashIndex {
 impl Default for GeoHashIndex {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_for_intensity_uses_lowest_matching_band_min() {
+        let mut subscription = Subscription::new("abc123".to_string(), 0.0, 0.0);
+        subscription.notify_bands = vec![
+            NotificationBand {
+                min: 4,
+                max: 6,
+                level: "critical".to_string(),
+                label: String::new(),
+            },
+            NotificationBand {
+                min: 2,
+                max: 5,
+                level: "active".to_string(),
+                label: String::new(),
+            },
+        ];
+
+        assert_eq!(
+            subscription.level_for_intensity(5).as_deref(),
+            Some("active")
+        );
     }
 }

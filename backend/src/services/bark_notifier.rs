@@ -22,6 +22,14 @@ pub struct AlertTiming {
     pub seconds_to_s: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct AlertRecipient {
+    pub bark_id: String,
+    pub location_name: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
 /// Bark 推送客户端，负责重试和无效订阅清理
 #[derive(Clone)]
 pub struct BarkNotifier {
@@ -67,7 +75,7 @@ impl BarkNotifier {
 
     pub async fn send_earthquake_alert(
         &self,
-        subscription: &Subscription,
+        recipient: &AlertRecipient,
         level: &str,
         earthquake: &CommonEarthquakeInfo,
         timing: &AlertTiming,
@@ -113,6 +121,14 @@ impl BarkNotifier {
         if earthquake.training {
             lines.push("[测试] 这是一条模拟预警，不是真实地震".to_string());
         }
+        if !recipient.location_name.trim().is_empty() {
+            lines.push(format!(
+                "监测点: {} {:.4}, {:.4}",
+                recipient.location_name.trim(),
+                recipient.latitude,
+                recipient.longitude
+            ));
+        }
         lines.extend([
             format!("地点: {}", region_text),
             format!(
@@ -139,7 +155,7 @@ impl BarkNotifier {
         ]);
         let body = lines.join("\n");
 
-        self.send_notification(&subscription.bark_id, level, &title, &subtitle, &body)
+        self.send_notification(&recipient.bark_id, level, &title, &subtitle, &body)
             .await
     }
 
