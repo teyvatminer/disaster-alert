@@ -9,9 +9,8 @@ use anyhow::Result;
 use futures_util::{StreamExt, stream};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Clone)]
@@ -98,6 +97,7 @@ impl EarthquakeMonitor {
     /// 启动 WebSocket 循环；连接断开后按指数退避重连
     pub async fn start(&self) -> Result<()> {
         let mut reconnect_delay = self.config.reconnect_min;
+        let mut consecutive_errors = 0u64;
         loop {
             tracing::info!(
                 event = "websocket.connecting",
@@ -109,9 +109,11 @@ impl EarthquakeMonitor {
                 Ok(_) => {
                     tracing::warn!(event = "websocket.closed", "websocket.closed");
                     reconnect_delay = self.config.reconnect_min;
+                    consecutive_errors = 0;
                 }
                 Err(e) => {
-                    tracing::error!(event = "websocket.error", error = ?e, "websocket.error");
+                    consecutive_errors += 1;
+                    tracing::error!(event = "websocket.error", error = ?e, consecutive_errors, "websocket.error");
                 }
             }
 
@@ -133,7 +135,8 @@ impl EarthquakeMonitor {
             "websocket.connected"
         );
 
-        let (mut _write, mut read) = ws_stream.split();
+        // tokio-tungstenite automatically queues Pong responses while reading Ping frames.
+        let (_write, mut read) = ws_stream.split();
 
         while let Some(message) = read.next().await {
             match message {
@@ -224,11 +227,12 @@ impl EarthquakeMonitor {
             "eew.received"
         );
 
-        if self.should_skip_event(&common_info) {
+        if self.should_skip_event(&common_info).await {
             return Ok(());
         }
 
         self.notify_subscribers(&common_info).await?;
+        self.mark_event_seen(&common_info).await;
 
         Ok(())
     }
@@ -236,8 +240,17 @@ impl EarthquakeMonitor {
     async fn notify_subscribers(&self, earthquake: &CommonEarthquakeInfo) -> Result<()> {
         let start_time = Instant::now();
 
-        let center_geohash = geohash::encode(earthquake.latitude, earthquake.longitude);
-        let neighbor_geohashes = geohash::get_neighbors(&center_geohash);
+        let Some(center_geohash) = geohash::try_encode(earthquake.latitude, earthquake.longitude)
+        else {
+            tracing::warn!(
+                event = "notify.invalid_coordinates",
+                latitude = earthquake.latitude,
+                longitude = earthquake.longitude,
+                "notify.invalid_coordinates"
+            );
+            return Ok(());
+        };
+        let neighbor_geohashes = geohash::try_get_neighbors(&center_geohash).unwrap_or_default();
 
         let event_key = earthquake_key(earthquake);
         tracing::info!(
@@ -249,7 +262,11 @@ impl EarthquakeMonitor {
         );
 
         let store = self.db.subscriptions();
-        let subscriptions = store.get_subscriptions_by_geohashes(&neighbor_geohashes)?;
+        let subscriptions =
+            tokio::task::spawn_blocking(move || {
+                store.get_subscriptions_by_geohashes(&neighbor_geohashes)
+            })
+            .await??;
 
         let total_candidates = subscriptions.len();
         tracing::info!(
@@ -366,7 +383,7 @@ impl EarthquakeMonitor {
             notified_count,
             error_count,
             elapsed_seconds = elapsed.as_secs_f64(),
-            throughput_per_second = if elapsed.as_secs_f64() > 0.0 {
+            throughput_per_second = if elapsed.as_secs_f64() >= 0.001 {
                 notified_count as f64 / elapsed.as_secs_f64()
             } else {
                 0.0
@@ -377,7 +394,7 @@ impl EarthquakeMonitor {
         Ok(())
     }
 
-    fn should_skip_event(&self, earthquake: &CommonEarthquakeInfo) -> bool {
+    async fn should_skip_event(&self, earthquake: &CommonEarthquakeInfo) -> bool {
         if earthquake.training && self.config.ignore_training {
             tracing::info!(
                 event = "eew.skipped",
@@ -411,20 +428,18 @@ impl EarthquakeMonitor {
             return true;
         }
 
-        let mut seen = match self.seen_events.lock() {
-            Ok(seen) => seen,
-            Err(error) => {
-                tracing::error!(event = "dedup.lock_poisoned", error = ?error, "dedup.lock_poisoned");
-                return true;
-            }
-        };
+        let mut seen = self.seen_events.lock().await;
         let now = Instant::now();
         seen.retain(|_, value| now.duration_since(value.at) <= self.config.dedup_keep);
         let key = earthquake_key(earthquake);
         if let Some(previous) = seen.get(&key) {
             let is_update = earthquake.report_num > previous.report_num;
             let gap = earthquake.report_num.saturating_sub(previous.report_num);
-            if !self.config.push_updates || !is_update || gap < self.config.update_min_report_gap {
+            let bypass_gap = is_update && (earthquake.final_report || earthquake.cancel);
+            if !is_update
+                || (!bypass_gap
+                    && (!self.config.push_updates || gap < self.config.update_min_report_gap))
+            {
                 tracing::debug!(
                     event = "eew.skipped",
                     reason = "duplicate",
@@ -436,6 +451,13 @@ impl EarthquakeMonitor {
                 return true;
             }
         }
+        false
+    }
+
+    async fn mark_event_seen(&self, earthquake: &CommonEarthquakeInfo) {
+        let mut seen = self.seen_events.lock().await;
+        let key = earthquake_key(earthquake);
+        let now = Instant::now();
         seen.insert(
             key,
             SeenEvent {
@@ -443,7 +465,6 @@ impl EarthquakeMonitor {
                 at: now,
             },
         );
-        false
     }
 
     fn evaluate_subscription(
@@ -517,15 +538,18 @@ fn seconds_until_arrival(
     hypocentral_km: f64,
     speed: f64,
 ) -> i64 {
-    if speed <= 0.0 {
+    if !speed.is_finite() || speed <= 0.0 {
         return 0;
     }
     let travel_seconds = (hypocentral_km / speed).round() as i64;
     if let Some(origin_epoch) = parse_origin_epoch_seconds(earthquake) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or(0);
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs() as i64,
+            Err(error) => {
+                tracing::error!(event = "clock_error", error = ?error, "clock_error");
+                return travel_seconds;
+            }
+        };
         origin_epoch + travel_seconds - now
     } else {
         travel_seconds
@@ -534,7 +558,13 @@ fn seconds_until_arrival(
 
 fn origin_age_seconds(earthquake: &CommonEarthquakeInfo) -> Option<i64> {
     let origin_epoch = parse_origin_epoch_seconds(earthquake)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(error) => {
+            tracing::error!(event = "clock_error", error = ?error, "clock_error");
+            return None;
+        }
+    };
     Some(now - origin_epoch)
 }
 
@@ -550,16 +580,26 @@ fn parse_origin_epoch_seconds(earthquake: &CommonEarthquakeInfo) -> Option<i64> 
 fn parse_datetime_epoch_seconds(value: &str, offset_seconds: i64) -> Option<i64> {
     let normalized = value.trim().replace('T', " ").replace('/', "-");
     let (date, time) = normalized.split_once(' ')?;
-    let mut date_parts = date.split('-').filter_map(|part| part.parse::<i64>().ok());
-    let year = date_parts.next()?;
-    let month = date_parts.next()?;
-    let day = date_parts.next()?;
-    let mut time_parts = time.split(':').filter_map(|part| part.parse::<i64>().ok());
-    let hour = time_parts.next()?;
-    let minute = time_parts.next()?;
-    let second = time_parts.next().unwrap_or(0);
+    let date_parts = date.split('-').collect::<Vec<_>>();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let year = date_parts[0].parse::<i64>().ok()?;
+    let month = date_parts[1].parse::<i64>().ok()?;
+    let day = date_parts[2].parse::<i64>().ok()?;
+    let time_parts = time.split(':').collect::<Vec<_>>();
+    if !(2..=3).contains(&time_parts.len()) {
+        return None;
+    }
+    let hour = time_parts[0].parse::<i64>().ok()?;
+    let minute = time_parts[1].parse::<i64>().ok()?;
+    let second = if time_parts.len() == 3 {
+        time_parts[2].parse::<i64>().ok()?
+    } else {
+        0
+    };
     if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+        || !(1..=days_in_month(year, month)).contains(&day)
         || !(0..=23).contains(&hour)
         || !(0..=59).contains(&minute)
         || !(0..=60).contains(&second)
@@ -568,6 +608,20 @@ fn parse_datetime_epoch_seconds(value: &str, offset_seconds: i64) -> Option<i64>
     }
     let days = days_from_civil(year, month, day);
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds)
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -593,5 +647,13 @@ mod tests {
         assert_eq!(beijing, slash);
         assert_eq!(beijing, jst);
         assert!(beijing.is_some());
+    }
+
+    #[test]
+    fn rejects_malformed_and_impossible_dates() {
+        assert_eq!(parse_datetime_epoch_seconds("2026-XX-07 09:30:00", 8 * 3600), None);
+        assert_eq!(parse_datetime_epoch_seconds("2026-02-30 09:30:00", 8 * 3600), None);
+        assert_eq!(parse_datetime_epoch_seconds("2026-04-31 09:30:00", 8 * 3600), None);
+        assert!(parse_datetime_epoch_seconds("2024-02-29 09:30:00", 8 * 3600).is_some());
     }
 }

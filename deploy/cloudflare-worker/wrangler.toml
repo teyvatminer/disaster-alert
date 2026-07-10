@@ -6,16 +6,14 @@ compatibility_date = "2025-12-28"
 [assets]
 directory = "../../web"
 
-# 环境变量
-[vars]
-# 后端服务器 URL（开发环境）
-# 支持 HTTP 和 HTTPS 协议
+# 本地开发环境变量；生产部署必须显式选择 env 并配置 HTTPS 后端。
+[env.development.vars]
 BACKEND_URL = "http://localhost:30010"
+ALLOWED_ORIGINS = "http://localhost:8787"
 
-# 生产环境配置
-# 强烈建议使用 HTTPS 以确保通信安全
-# [env.production.vars]
-# BACKEND_URL = "https://your-backend-server.com"
+[env.production.vars]
+BACKEND_URL = "https://your-backend-server.com"
+ALLOWED_ORIGINS = "https://eew.example.com"
 
 # [observability]
 # enabled = false

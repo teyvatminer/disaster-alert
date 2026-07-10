@@ -1,7 +1,8 @@
 use crate::db::SubscriptionStore;
 use crate::models::{CommonEarthquakeInfo, Subscription, mask_bark_id};
 use anyhow::Result;
-use std::time::Duration;
+use serde::Deserialize;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use urlencoding::encode;
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ impl BarkNotifier {
         subscription_store: SubscriptionStore,
         push_config: BarkPushConfig,
     ) -> Result<Self> {
+        push_config.validate()?;
         let client = reqwest::Client::builder()
             .user_agent("EarthquakeAlert/1.0")
             .timeout(Duration::from_secs(3))
@@ -202,6 +204,8 @@ impl BarkNotifier {
             .collect::<Vec<_>>()
             .join("&");
 
+        // bark_id and alert content travel in the URL path/query and can appear in proxy logs.
+        // urlencoding::encode percent-encodes path metacharacters such as '/'.
         let url = format!(
             "{}/{}/{}/{}/{}?{}",
             self.api_url,
@@ -219,21 +223,33 @@ impl BarkNotifier {
             match self.client.get(&url).send().await {
                 Ok(response) => {
                     let status = response.status();
+                    let status_code = status.as_u16();
 
                     if status.is_success() {
-                        tracing::debug!(
-                            event = "bark.push_succeeded",
+                        let body_text = response.text().await.unwrap_or_default();
+                        if bark_response_succeeded(&body_text) {
+                            tracing::debug!(
+                                event = "bark.push_succeeded",
+                                bark_id = %mask_bark_id(bark_id),
+                                status = status_code,
+                                "bark.push_succeeded"
+                            );
+                            return Ok(());
+                        }
+
+                        tracing::warn!(
+                            event = "bark.push_rejected",
                             bark_id = %mask_bark_id(bark_id),
-                            status = status.as_u16(),
-                            "bark.push_succeeded"
+                            status = status_code,
+                            response_body = %body_text,
+                            cleanup = false,
+                            "bark.push_rejected"
                         );
-                        return Ok(());
+                        return Err(anyhow::anyhow!("Bark 推送失败: {}", body_text));
                     } else {
-                        let status_code = status.as_u16();
                         let error_text = response.text().await.unwrap_or_default();
 
-                        // Bark 对无效 key 可能返回 500；这些状态继续重试意义不大，直接清理订阅
-                        if status_code == 400 || status_code == 404 || status_code == 500 {
+                        if status_code == 400 || status_code == 404 {
                             tracing::warn!(
                                 event = "bark.push_rejected",
                                 bark_id = %mask_bark_id(bark_id),
@@ -243,7 +259,15 @@ impl BarkNotifier {
                                 "bark.push_rejected"
                             );
 
-                            if let Err(e) = self.subscription_store.delete_subscription(bark_id) {
+                            let store = self.subscription_store.clone();
+                            let bark_id_owned = bark_id.to_string();
+                            if let Err(e) = tokio::task::spawn_blocking(move || {
+                                store.delete_subscription(&bark_id_owned)
+                            })
+                            .await
+                            .map_err(anyhow::Error::from)
+                            .and_then(|result| result)
+                            {
                                 tracing::error!(
                                     event = "subscription.cleanup_failed",
                                     bark_id = %mask_bark_id(bark_id),
@@ -276,7 +300,7 @@ impl BarkNotifier {
                                 response_body = %error_text,
                                 "bark.push_retrying"
                             );
-                            tokio::time::sleep(Duration::from_millis(100 * retries)).await;
+                            tokio::time::sleep(backoff_delay(retries)).await;
                             continue;
                         }
 
@@ -301,7 +325,7 @@ impl BarkNotifier {
                             error = ?e,
                             "bark.request_retrying"
                         );
-                        tokio::time::sleep(Duration::from_millis(100 * retries)).await;
+                        tokio::time::sleep(backoff_delay(retries)).await;
                         continue;
                     }
 
@@ -316,4 +340,40 @@ impl BarkNotifier {
             }
         }
     }
+}
+
+impl BarkPushConfig {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(self.volume <= 10, "BARK_VOLUME must be in 0..=10");
+        Ok(())
+    }
+}
+
+fn bark_response_succeeded(body: &str) -> bool {
+    if body.trim().is_empty() {
+        return true;
+    }
+
+    #[derive(Deserialize)]
+    struct BarkEnvelope {
+        code: Option<i64>,
+        success: Option<bool>,
+    }
+
+    match serde_json::from_str::<BarkEnvelope>(body) {
+        Ok(response) => response.code == Some(200) || response.success == Some(true),
+        Err(_) => false,
+    }
+}
+
+fn backoff_delay(retry: u32) -> Duration {
+    let base = 100u64.saturating_mul(1u64 << retry.saturating_sub(1));
+    Duration::from_millis(base + jitter_millis())
+}
+
+fn jitter_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::from(duration.subsec_nanos()) % 50)
+        .unwrap_or(0)
 }

@@ -2,15 +2,30 @@
 
 const BASE32: &[u8] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 const PRECISION: usize = 4;
+const MAX_PRECISION: usize = 12;
 
+#[cfg(test)]
 pub fn encode(lat: f64, lon: f64) -> String {
     encode_with_precision(lat, lon, PRECISION)
 }
 
+#[cfg(test)]
 pub fn encode_with_precision(lat: f64, lon: f64, precision: usize) -> String {
+    try_encode_with_precision(lat, lon, precision).unwrap_or_default()
+}
+
+pub fn try_encode(lat: f64, lon: f64) -> Option<String> {
+    try_encode_with_precision(lat, lon, PRECISION)
+}
+
+pub fn try_encode_with_precision(lat: f64, lon: f64, precision: usize) -> Option<String> {
+    if !valid_coordinates(lat, lon) || precision > MAX_PRECISION {
+        return None;
+    }
+
     let mut lat_range = (-90.0, 90.0);
     let mut lon_range = (-180.0, 180.0);
-    let mut hash = String::new();
+    let mut hash = String::with_capacity(precision);
     let mut bits = 0u8;
     let mut bit_count = 0;
 
@@ -41,11 +56,20 @@ pub fn encode_with_precision(lat: f64, lon: f64, precision: usize) -> String {
         }
     }
 
-    hash
+    Some(hash)
 }
 
 /// 返回中心格子、四向邻居和对角邻居
+#[cfg(test)]
 pub fn get_neighbors(geohash: &str) -> Vec<String> {
+    try_get_neighbors(geohash).unwrap_or_default()
+}
+
+pub fn try_get_neighbors(geohash: &str) -> Option<Vec<String>> {
+    if !valid_geohash(geohash) {
+        return None;
+    }
+
     let mut neighbors = Vec::with_capacity(9);
     neighbors.push(geohash.to_string());
 
@@ -87,7 +111,20 @@ pub fn get_neighbors(geohash: &str) -> Vec<String> {
     neighbors.sort();
     neighbors.dedup();
 
-    neighbors
+    Some(neighbors)
+}
+
+fn valid_coordinates(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+}
+
+fn valid_geohash(geohash: &str) -> bool {
+    !geohash.is_empty()
+        && geohash.len() <= MAX_PRECISION
+        && geohash.bytes().all(|byte| BASE32.contains(&byte))
 }
 
 #[derive(Debug)]
@@ -99,7 +136,7 @@ enum Direction {
 }
 
 fn neighbor(geohash: &str, direction: Direction) -> Option<String> {
-    if geohash.is_empty() {
+    if !valid_geohash(geohash) {
         return None;
     }
 
@@ -130,7 +167,7 @@ fn neighbor(geohash: &str, direction: Direction) -> Option<String> {
     };
 
     let last_char = geohash.chars().last()?;
-    let parent = &geohash[..geohash.len() - 1];
+    let parent = &geohash[..geohash.len() - last_char.len_utf8()];
     let type_idx = geohash.len() % 2;
 
     let mut base = parent.to_string();

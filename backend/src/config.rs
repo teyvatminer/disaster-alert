@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, bail};
 use std::env;
 
 /// 应用配置
@@ -5,6 +6,7 @@ use std::env;
 pub struct Config {
     pub server_host: String,
     pub server_port: u16,
+    pub allowed_origins: Vec<String>,
     pub db_path: String,
     pub bark_api_url: String,
     pub bark_sound: Option<String>,
@@ -31,79 +33,111 @@ pub struct Config {
 
 impl Config {
     /// 从环境变量加载配置
-    pub fn from_env() -> Self {
-        Self {
-            server_host: env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            server_port: env::var("SERVER_PORT")
-                .unwrap_or_else(|_| "30010".to_string())
-                .parse()
-                .unwrap_or(30010),
-            db_path: env::var("DB_PATH").unwrap_or_else(|_| "./data/earthquake.db".to_string()),
-            bark_api_url: env::var("BARK_API_URL")
-                .unwrap_or_else(|_| "https://api.day.app".to_string()),
+    pub fn from_env() -> Result<Self> {
+        let config = Self {
+            server_host: env_string("SERVER_HOST", "0.0.0.0"),
+            server_port: env_parse("SERVER_PORT", 30010)?,
+            allowed_origins: env_list("ALLOWED_ORIGINS"),
+            db_path: env_string("DB_PATH", "./data/earthquake.db"),
+            bark_api_url: env_string("BARK_API_URL", "https://api.day.app"),
             bark_sound: env::var("BARK_SOUND")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-            bark_volume: env::var("BARK_VOLUME")
-                .unwrap_or_else(|_| "10".to_string())
-                .parse()
-                .unwrap_or(10),
-            bark_group: env::var("BARK_GROUP").unwrap_or_else(|_| "地震预警".to_string()),
-            bark_call: env::var("BARK_CALL")
-                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(false),
-            eew_websocket_url: env::var("EEW_WEBSOCKET_URL")
-                .unwrap_or_else(|_| "wss://ws-api.wolfx.jp/all_eew".to_string()),
-            reconnect_min_seconds: env::var("RECONNECT_MIN_SECONDS")
-                .unwrap_or_else(|_| "1".to_string())
-                .parse()
-                .unwrap_or(1),
-            reconnect_max_seconds: env::var("RECONNECT_MAX_SECONDS")
-                .unwrap_or_else(|_| "30".to_string())
-                .parse()
-                .unwrap_or(30),
-            push_updates: env::var("PUSH_UPDATES")
-                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(false),
-            update_min_report_gap: env::var("UPDATE_MIN_REPORT_GAP")
-                .unwrap_or_else(|_| "1".to_string())
-                .parse()
-                .unwrap_or(1),
-            ignore_training: env::var("IGNORE_TRAINING")
-                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(true),
-            ignore_cancel: env::var("IGNORE_CANCEL")
-                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(true),
-            p_wave_km_s: env::var("P_WAVE_KM_S")
-                .unwrap_or_else(|_| "6.0".to_string())
-                .parse()
-                .unwrap_or(6.0),
-            s_wave_km_s: env::var("S_WAVE_KM_S")
-                .unwrap_or_else(|_| "3.5".to_string())
-                .parse()
-                .unwrap_or(3.5),
-            stale_origin_seconds: env::var("STALE_ORIGIN_SECONDS")
-                .unwrap_or_else(|_| "600".to_string())
-                .parse()
-                .unwrap_or(600),
-            dedup_keep_minutes: env::var("DEDUP_KEEP_MINUTES")
-                .unwrap_or_else(|_| "120".to_string())
-                .parse()
-                .unwrap_or(120),
-            max_distance_km: env::var("MAX_DISTANCE_KM")
-                .unwrap_or_else(|_| "1000".to_string())
-                .parse()
-                .unwrap_or(1000.0),
-            max_concurrent_notifications: env::var("MAX_CONCURRENT_NOTIFICATIONS")
-                .unwrap_or_else(|_| "1000".to_string())
-                .parse()
-                .unwrap_or(1000),
-            http_pool_size: env::var("HTTP_POOL_SIZE")
-                .unwrap_or_else(|_| "200".to_string())
-                .parse()
-                .unwrap_or(200),
+            bark_volume: env_parse("BARK_VOLUME", 10)?,
+            bark_group: env_string("BARK_GROUP", "地震预警"),
+            bark_call: env_bool("BARK_CALL", false)?,
+            eew_websocket_url: env_string("EEW_WEBSOCKET_URL", "wss://ws-api.wolfx.jp/all_eew"),
+            reconnect_min_seconds: env_parse("RECONNECT_MIN_SECONDS", 1)?,
+            reconnect_max_seconds: env_parse("RECONNECT_MAX_SECONDS", 30)?,
+            push_updates: env_bool("PUSH_UPDATES", false)?,
+            update_min_report_gap: env_parse("UPDATE_MIN_REPORT_GAP", 1)?,
+            ignore_training: env_bool("IGNORE_TRAINING", true)?,
+            ignore_cancel: env_bool("IGNORE_CANCEL", true)?,
+            p_wave_km_s: env_parse("P_WAVE_KM_S", 6.0)?,
+            s_wave_km_s: env_parse("S_WAVE_KM_S", 3.5)?,
+            stale_origin_seconds: env_parse("STALE_ORIGIN_SECONDS", 600)?,
+            dedup_keep_minutes: env_parse("DEDUP_KEEP_MINUTES", 120)?,
+            max_distance_km: env_parse("MAX_DISTANCE_KM", 1000.0)?,
+            max_concurrent_notifications: env_parse("MAX_CONCURRENT_NOTIFICATIONS", 1000)?,
+            http_pool_size: env_parse("HTTP_POOL_SIZE", 200)?,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.reconnect_min_seconds == 0 {
+            bail!("RECONNECT_MIN_SECONDS must be greater than 0");
         }
+        if self.reconnect_min_seconds > self.reconnect_max_seconds {
+            bail!("RECONNECT_MIN_SECONDS must be <= RECONNECT_MAX_SECONDS");
+        }
+        if !(self.p_wave_km_s.is_finite() && self.p_wave_km_s > 0.0) {
+            bail!("P_WAVE_KM_S must be a finite positive number");
+        }
+        if !(self.s_wave_km_s.is_finite() && self.s_wave_km_s > 0.0) {
+            bail!("S_WAVE_KM_S must be a finite positive number");
+        }
+        if self.stale_origin_seconds < 0 {
+            bail!("STALE_ORIGIN_SECONDS must be >= 0");
+        }
+        if self.dedup_keep_minutes == 0 {
+            bail!("DEDUP_KEEP_MINUTES must be greater than 0");
+        }
+        if !(self.max_distance_km.is_finite() && self.max_distance_km >= 0.0) {
+            bail!("MAX_DISTANCE_KM must be a finite non-negative number");
+        }
+        if self.max_concurrent_notifications == 0 || self.max_concurrent_notifications > 10_000 {
+            bail!("MAX_CONCURRENT_NOTIFICATIONS must be in 1..=10000");
+        }
+        if self.http_pool_size == 0 || self.http_pool_size > 10_000 {
+            bail!("HTTP_POOL_SIZE must be in 1..=10000");
+        }
+        if self.bark_volume > 10 {
+            bail!("BARK_VOLUME must be in 0..=10");
+        }
+        Ok(())
+    }
+}
+
+fn env_string(name: &str, default: &str) -> String {
+    env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_list(name: &str) -> Vec<String> {
+    env::var(name)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn env_parse<T>(name: &str, default: T) -> Result<T>
+where
+    T: std::str::FromStr + Copy,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    match env::var(name) {
+        Ok(value) => value
+            .trim()
+            .parse::<T>()
+            .with_context(|| format!("failed to parse {name}={value:?}")),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error).with_context(|| format!("failed to read {name}")),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool> {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => bail!("failed to parse {name}={value:?} as boolean"),
+        },
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error).with_context(|| format!("failed to read {name}")),
     }
 }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Wolfx 地震预警订阅</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230071e3'/%3E%3Cpath d='M7 36h10l7-16 12 28 9-21 6 9h6' stroke='white' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQjR6N9aXkP8+/7I9S7y+4C5V5H1gYA=" crossorigin="anonymous" />
   <style>
     :root {
       color-scheme: light dark;
@@ -375,7 +375,7 @@
     <footer>数据源 Wolfx.jp · 本页仅从当前浏览器恢复已填写内容</footer>
   </main>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
   <script>
     const api = (window.EEW_API_BASE || window.location.origin).replace(/\/$/, "");
     const storageKey = "eew_subscription_draft_v2";
@@ -431,6 +431,11 @@
       return name || `${Number(location.latitude).toFixed(4)}, ${Number(location.longitude).toFixed(4)}`;
     }
 
+    function formatCoordinate(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(4) : "";
+    }
+
     function normalizeLocations(items) {
       const seen = new Set();
       const result = [];
@@ -441,7 +446,7 @@
         const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        result.push({ name: String(item.name || "").trim().slice(0, 80), latitude: lat, longitude: lon });
+        result.push({ name: String(item.name || "").trim(), latitude: lat, longitude: lon });
         if (result.length >= 3) break;
       }
       return result;
@@ -454,10 +459,10 @@
         return;
       }
       locationsList.innerHTML = selectedLocations.map((item, index) => `
-        <div class="location-item" data-index="${index}">
+        <div class="location-item" data-index="${escapeHtml(index)}">
           <div>
             <div class="location-name">${escapeHtml(locationLabel(item))}</div>
-            <div class="location-coords">${Number(item.latitude).toFixed(4)}, ${Number(item.longitude).toFixed(4)}</div>
+            <div class="location-coords">${escapeHtml(formatCoordinate(item.latitude))}, ${escapeHtml(formatCoordinate(item.longitude))}</div>
           </div>
           <button class="remove-location" type="button" data-action="remove" aria-label="删除地点">×</button>
         </div>
@@ -468,6 +473,8 @@
       const lat = Number(latInput.value);
       const lon = Number(lonInput.value);
       if (!validCoordinate(lat, lon)) return show("请输入有效经纬度", "error");
+      const nameError = validateLocationNames([{ name: nameInput.value, latitude: lat, longitude: lon }]);
+      if (nameError) return show(nameError, "error");
       if (selectedLocations.length >= 3) return show("最多添加 3 个监测地点", "error");
       selectedLocations = normalizeLocations([...selectedLocations, { name: nameInput.value, latitude: lat, longitude: lon }]);
       renderLocations();
@@ -496,9 +503,7 @@
         usedLevels.add(level);
         let min = clampInt(band.min, 0, 7, 0);
         let max = String(band.max).includes("+") ? 99 : clampInt(band.max, 0, 99, level === "critical" ? 99 : min);
-        if (level === "critical" && max < 7) max = 99;
-        if (min > max) [min, max] = [max, min];
-        result.push({ min, max, level, label: String(band.label || levelLabel(level)).slice(0, 32) });
+        result.push({ min, max, level, label: String(band.label || levelLabel(level)).trim() });
         if (result.length >= 3) break;
       }
       return result.length ? result.sort((a, b) => a.min - b.min) : defaultNotifyBands();
@@ -508,6 +513,13 @@
       const number = Number.parseInt(value, 10);
       if (!Number.isFinite(number)) return fallback;
       return Math.min(max, Math.max(min, number));
+    }
+
+    function validateLocationNames(locations) {
+      for (const location of locations) {
+        if (String(location.name || "").trim().length > 80) return "监测地点名称最多 80 个字符";
+      }
+      return "";
     }
 
     function validateBands(bands) {
@@ -520,6 +532,7 @@
         levels.add(band.level);
         if (band.min > band.max || band.min < 0 || band.max > 99) return "烈度范围无效";
         if (band.level === "critical" && band.max < 7) return "Critical 规则上限必须覆盖 7+";
+        if (String(band.label || "").trim().length > 32) return "通知级别标签最多 32 个字符";
         for (let value = band.min; value <= band.max; value++) {
           if (used.has(value)) return "烈度范围不能重叠";
           used.add(value);
@@ -531,14 +544,14 @@
     function renderNotifyBands() {
       notifyBands = normalizeBands(notifyBands);
       notifyBandsEl.innerHTML = notifyBands.map((band, index) => `
-        <div class="rule-row" data-index="${index}">
+        <div class="rule-row" data-index="${escapeHtml(index)}">
           <div class="range-fields">
-            <input class="band-min" type="number" min="0" max="7" step="1" value="${band.min}" aria-label="起始烈度">
+            <input class="band-min" type="number" min="0" max="7" step="1" value="${escapeHtml(band.min)}" aria-label="起始烈度">
             <span>到</span>
-            <input class="band-max" type="text" inputmode="numeric" value="${band.max >= 99 ? "7+" : band.max}" aria-label="最高烈度">
+            <input class="band-max" type="text" inputmode="numeric" value="${escapeHtml(band.max >= 99 ? "7+" : band.max)}" aria-label="最高烈度">
           </div>
-          <select class="band-select level-${band.level}" aria-label="通知级别">
-            ${notifyLevelOrder.map((level) => `<option value="${level}" ${level === band.level ? "selected" : ""}>${levelLabel(level)}</option>`).join("")}
+          <select class="band-select level-${escapeHtml(band.level)}" aria-label="通知级别">
+            ${notifyLevelOrder.map((level) => `<option value="${escapeHtml(level)}" ${level === band.level ? "selected" : ""}>${escapeHtml(levelLabel(level))}</option>`).join("")}
           </select>
           <button class="remove-rule" type="button" data-action="remove-rule" aria-label="删除规则">×</button>
         </div>
@@ -552,7 +565,7 @@
         const min = clampInt(row.querySelector(".band-min").value, 0, 7, 0);
         const maxText = row.querySelector(".band-max").value.trim();
         const max = maxText === "7+" ? 99 : clampInt(maxText, 0, 99, level === "critical" ? 99 : 7);
-        bands.push({ min, max: level === "critical" && max < 7 ? 99 : max, level, label: levelLabel(level) });
+        bands.push({ min, max, level, label: levelLabel(level) });
       });
       return normalizeBands(bands);
     }
@@ -568,7 +581,6 @@
 
     function persistDraft() {
       const draft = {
-        bark_id: barkInput.value.trim(),
         current: { name: nameInput.value.trim(), latitude: Number(latInput.value), longitude: Number(lonInput.value) },
         locations: selectedLocations,
         notify_bands: notifyBands,
@@ -578,7 +590,10 @@
 
     function restoreDraft() {
       const draft = safeJson(localStorage.getItem(storageKey)) || {};
-      barkInput.value = draft.bark_id || "";
+      if (draft.bark_id) {
+        delete draft.bark_id;
+        localStorage.setItem(storageKey, JSON.stringify(draft));
+      }
       selectedLocations = normalizeLocations(draft.locations || []);
       notifyBands = normalizeBands(draft.notify_bands || defaultNotifyBands());
       const current = draft.current || selectedLocations[0];
@@ -592,6 +607,13 @@
 
     function safeJson(value) {
       try { return value ? JSON.parse(value) : null; } catch { return null; }
+    }
+
+    async function parseApiResponse(res) {
+      const text = await res.text();
+      const json = safeJson(text);
+      if (json && typeof json === "object") return json;
+      return { success: res.ok, message: text.trim() || res.statusText || "请求失败" };
     }
 
     function escapeHtml(value) {
@@ -642,7 +664,7 @@
       persistDraft();
     });
 
-    [barkInput, nameInput, latInput, lonInput].forEach((input) => input.addEventListener("input", persistDraft));
+    [nameInput, latInput, lonInput].forEach((input) => input.addEventListener("input", persistDraft));
 
     document.querySelector("#add-rule").addEventListener("click", () => {
       if (!commitBands()) return;
@@ -685,6 +707,8 @@
         if (validCoordinate(lat, lon)) locations = normalizeLocations([{ name: nameInput.value, latitude: lat, longitude: lon }]);
       }
       if (!locations.length) return show("请至少添加一个监测地点", "error");
+      const nameError = validateLocationNames(locations);
+      if (nameError) return show(nameError, "error");
       const barkID = barkInput.value.trim();
       if (!/^[A-Za-z0-9]{1,64}$/.test(barkID)) return show("Bark Key 只能包含字母和数字", "error");
       const payload = {
@@ -703,7 +727,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const json = await res.json();
+        const json = await parseApiResponse(res);
         if (!res.ok || !json.success) throw new Error(json.message || "保存失败");
         selectedLocations = locations;
         persistDraft();
@@ -729,7 +753,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bark_id: barkID }),
         });
-        const json = await res.json();
+        const json = await parseApiResponse(res);
         if (!res.ok || !json.success) throw new Error(json.message || "取消失败");
         localStorage.removeItem(storageKey);
         selectedLocations = [];
@@ -748,8 +772,8 @@
     async function refreshStats() {
       try {
         const res = await fetch(api + "/api/stats");
-        const json = await res.json();
-        stats.textContent = json.success ? `${json.data.total_subscriptions} 人订阅` : "状态未知";
+        const json = await parseApiResponse(res);
+        stats.textContent = json.success && json.data ? `${json.data.total_subscriptions} 人订阅` : "状态未知";
       } catch {
         stats.textContent = "状态未知";
       }

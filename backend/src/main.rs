@@ -5,9 +5,10 @@ mod routes;
 mod services;
 mod utils;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Router,
+    http::{HeaderValue, Method},
     routing::{delete, get, post},
 };
 use config::Config;
@@ -17,7 +18,7 @@ use routes::{
 };
 use services::{BarkNotifier, BarkPushConfig, EarthquakeMonitor};
 use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -30,7 +31,7 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = Config::from_env();
+    let config = Config::from_env().context("failed to load configuration")?;
     tracing::info!(
         event = "config.loaded",
         server_host = %config.server_host,
@@ -63,6 +64,8 @@ async fn main() -> Result<()> {
         bark_notifier: bark_notifier.clone(),
     };
 
+    let cors = build_cors_layer(&config)?;
+
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/index.html", get(index_handler))
@@ -70,27 +73,56 @@ async fn main() -> Result<()> {
         .route("/api/subscribe", post(subscribe_handler))
         .route("/api/unsubscribe", delete(unsubscribe_handler))
         .route("/api/stats", get(stats_handler))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors)
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", config.server_host, config.server_port).parse()?;
+    let addr: SocketAddr = format!("{}:{}", config.server_host, config.server_port)
+        .parse()
+        .context("failed to parse listen address")?;
 
     tracing::info!(event = "server.starting", listen_addr = %addr, "server.starting");
 
     let monitor = EarthquakeMonitor::new(db, config.clone(), bark_notifier)?;
-    tokio::spawn(async move {
-        if let Err(e) = monitor.start().await {
-            tracing::error!(event = "monitor.task_failed", error = ?e, "monitor.task_failed");
-        }
-    });
+    let monitor_handle = tokio::spawn(async move { monitor.start().await });
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .context("failed to bind HTTP listener")?;
+    let server = axum::serve(listener, app);
+
+    tokio::select! {
+        result = server => {
+            result.context("HTTP server failed")?;
+        }
+        result = monitor_handle => {
+            match result {
+                Ok(Ok(())) => tracing::warn!(event = "monitor.task_finished", "monitor.task_finished"),
+                Ok(Err(error)) => return Err(error).context("monitor task failed"),
+                Err(error) => return Err(error).context("monitor task panicked"),
+            }
+        }
+    }
 
     Ok(())
+}
+
+fn build_cors_layer(config: &Config) -> Result<CorsLayer> {
+    let mut origins = Vec::new();
+    for origin in &config.allowed_origins {
+        origins.push(
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid ALLOWED_ORIGINS entry {origin:?}"))?,
+        );
+    }
+
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION]);
+
+    if origins.is_empty() {
+        Ok(cors)
+    } else {
+        Ok(cors.allow_origin(origins))
+    }
 }

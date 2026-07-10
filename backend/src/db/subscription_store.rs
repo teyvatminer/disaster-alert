@@ -1,12 +1,19 @@
 use crate::models::{GeoHashIndex, Subscription, mask_bark_id};
 use crate::utils::geohash;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use sled::Db;
+use sled::transaction::{ConflictableTransactionError, TransactionError, TransactionalTree};
 use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct SubscriptionStore {
     db: Db,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreErrorKind {
+    NotFound,
+    Internal,
 }
 
 impl SubscriptionStore {
@@ -18,58 +25,50 @@ impl SubscriptionStore {
         let bark_id = subscription.bark_id.clone();
         let new_geohashes = subscription_geohashes(&subscription);
 
-        let old_subscription = self.get_subscription(&bark_id).ok();
+        let old_subscription = self.get_subscription_optional(&bark_id)?;
         let is_new_subscription = old_subscription.is_none();
 
-        if let Some(old_sub) = old_subscription {
-            for old_geohash in subscription_geohashes(&old_sub) {
-                if !new_geohashes.contains(&old_geohash) {
-                    self.remove_from_geohash_index(&bark_id, &old_geohash)?;
-                }
+        let old_geohashes = old_subscription
+            .as_ref()
+            .map(subscription_geohashes)
+            .unwrap_or_default();
+        let primary_key = format!("sub:{}", bark_id);
+        let primary_value = serde_json::to_vec(&subscription)?;
+
+        run_transaction(self.db.transaction(|tx| {
+            for geohash_str in old_geohashes.difference(&new_geohashes) {
+                remove_from_geohash_index_tx(tx, &bark_id, geohash_str)?;
             }
-        }
+            tx.insert(primary_key.as_bytes(), primary_value.clone())?;
+            for geohash_str in &new_geohashes {
+                add_to_geohash_index_tx(tx, &bark_id, geohash_str)?;
+            }
+            Ok(())
+        }))?;
 
-        let key = format!("sub:{}", bark_id);
-        let value = serde_json::to_vec(&subscription)?;
-        self.db.insert(key.as_bytes(), value)?;
-
-        for geohash_str in &new_geohashes {
-            self.add_to_geohash_index(&bark_id, geohash_str)?;
-        }
-
-        if is_new_subscription {
-            self.increment_subscription_count()?;
-            tracing::info!(
-                event = "subscription.stored",
-                action = "insert",
-                bark_id = %mask_bark_id(&bark_id),
-                geohash_count = new_geohashes.len(),
-                "subscription.stored"
-            );
-        } else {
-            tracing::info!(
-                event = "subscription.stored",
-                action = "update",
-                bark_id = %mask_bark_id(&bark_id),
-                geohash_count = new_geohashes.len(),
-                "subscription.stored"
-            );
-        }
+        tracing::info!(
+            event = "subscription.stored",
+            action = if is_new_subscription { "insert" } else { "update" },
+            bark_id = %mask_bark_id(&bark_id),
+            geohash_count = new_geohashes.len(),
+            "subscription.stored"
+        );
 
         Ok(())
     }
 
     pub fn delete_subscription(&self, bark_id: &str) -> Result<()> {
         let subscription = self.get_subscription(bark_id)?;
+        let geohashes = subscription_geohashes(&subscription);
+        let primary_key = format!("sub:{}", bark_id);
 
-        for geohash_str in subscription_geohashes(&subscription) {
-            self.remove_from_geohash_index(bark_id, &geohash_str)?;
-        }
-
-        let key = format!("sub:{}", bark_id);
-        self.db.remove(key.as_bytes())?;
-
-        self.decrement_subscription_count()?;
+        run_transaction(self.db.transaction(|tx| {
+            for geohash_str in &geohashes {
+                remove_from_geohash_index_tx(tx, bark_id, geohash_str)?;
+            }
+            tx.remove(primary_key.as_bytes())?;
+            Ok(())
+        }))?;
 
         tracing::info!(
             event = "subscription.deleted",
@@ -80,14 +79,27 @@ impl SubscriptionStore {
     }
 
     pub fn get_subscription(&self, bark_id: &str) -> Result<Subscription> {
-        let key = format!("sub:{}", bark_id);
-        let value = self
-            .db
-            .get(key.as_bytes())?
-            .ok_or_else(|| anyhow!("订阅不存在"))?;
+        self.get_subscription_optional(bark_id)?
+            .ok_or_else(|| anyhow!("订阅不存在"))
+    }
 
-        let subscription: Subscription = serde_json::from_slice(&value)?;
-        Ok(subscription)
+    pub fn classify_error(error: &anyhow::Error) -> StoreErrorKind {
+        if error.to_string().contains("订阅不存在") {
+            StoreErrorKind::NotFound
+        } else {
+            StoreErrorKind::Internal
+        }
+    }
+
+    fn get_subscription_optional(&self, bark_id: &str) -> Result<Option<Subscription>> {
+        let key = format!("sub:{}", bark_id);
+        let Some(value) = self.db.get(key.as_bytes())? else {
+            return Ok(None);
+        };
+
+        let subscription: Subscription = serde_json::from_slice(&value)
+            .with_context(|| format!("订阅数据格式错误: {}", mask_bark_id(bark_id)))?;
+        Ok(Some(subscription))
     }
 
     pub fn get_subscriptions_by_geohashes(
@@ -97,7 +109,7 @@ impl SubscriptionStore {
         let mut all_bark_ids = Vec::new();
 
         for gh in geohashes {
-            if let Ok(index) = self.get_geohash_index(gh) {
+            if let Some(index) = self.get_geohash_index_optional(gh)? {
                 all_bark_ids.extend(index.bark_ids);
             }
         }
@@ -107,8 +119,13 @@ impl SubscriptionStore {
 
         let mut subscriptions = Vec::new();
         for bark_id in all_bark_ids {
-            if let Ok(sub) = self.get_subscription(&bark_id) {
-                subscriptions.push(sub);
+            match self.get_subscription_optional(&bark_id)? {
+                Some(sub) => subscriptions.push(sub),
+                None => tracing::warn!(
+                    event = "subscription.index_dangling",
+                    bark_id = %mask_bark_id(&bark_id),
+                    "subscription.index_dangling"
+                ),
             }
         }
 
@@ -116,79 +133,103 @@ impl SubscriptionStore {
     }
 
     pub fn get_total_count(&self) -> Result<usize> {
-        let key = b"stats:total";
-        if let Some(value) = self.db.get(key)? {
-            let count_bytes: [u8; 8] = value
-                .as_ref()
-                .try_into()
-                .map_err(|error| anyhow!("统计数据格式错误: {error:?}"))?;
-            Ok(u64::from_be_bytes(count_bytes) as usize)
-        } else {
-            Ok(0)
+        let mut count = 0usize;
+        for item in self.db.scan_prefix(b"sub:") {
+            let (_key, _value) = item?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn get_geohash_index_optional(&self, geohash: &str) -> Result<Option<GeoHashIndex>> {
+        let key = format!("geo:{}", geohash);
+        let Some(value) = self.db.get(key.as_bytes())? else {
+            return Ok(None);
+        };
+
+        let index: GeoHashIndex = serde_json::from_slice(&value)
+            .with_context(|| format!("GeoHash 索引数据格式错误: {geohash}"))?;
+        Ok(Some(index))
+    }
+
+}
+
+#[derive(Debug, Clone)]
+enum TxError {
+    Serde(String),
+}
+
+impl std::fmt::Display for TxError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxError::Serde(message) => write!(formatter, "事务序列化失败: {message}"),
         }
     }
+}
 
-    fn add_to_geohash_index(&self, bark_id: &str, geohash: &str) -> Result<()> {
-        let key = format!("geo:{}", geohash);
+fn run_transaction(result: std::result::Result<(), TransactionError<TxError>>) -> Result<()> {
+    result.map_err(|error| match error {
+        TransactionError::Abort(error) => anyhow!("{error}"),
+        TransactionError::Storage(error) => anyhow::Error::new(error).context("storage transaction failed"),
+    })
+}
 
-        let mut index = self.get_geohash_index(geohash).unwrap_or_default();
-        index.add(bark_id.to_string());
+fn add_to_geohash_index_tx(
+    tx: &TransactionalTree,
+    bark_id: &str,
+    geohash: &str,
+) -> std::result::Result<(), ConflictableTransactionError<TxError>> {
+    let key = format!("geo:{geohash}");
+    let mut index = geohash_index_from_tx(tx, &key, geohash)?.unwrap_or_default();
+    index.add(bark_id.to_string());
+    let value = serde_json::to_vec(&index)
+        .map_err(|error| ConflictableTransactionError::Abort(TxError::Serde(error.to_string())))?;
+    tx.insert(key.as_bytes(), value)?;
+    Ok(())
+}
 
-        let value = serde_json::to_vec(&index)?;
-        self.db.insert(key.as_bytes(), value)?;
-
-        Ok(())
+fn remove_from_geohash_index_tx(
+    tx: &TransactionalTree,
+    bark_id: &str,
+    geohash: &str,
+) -> std::result::Result<(), ConflictableTransactionError<TxError>> {
+    let key = format!("geo:{geohash}");
+    let Some(mut index) = geohash_index_from_tx(tx, &key, geohash)? else {
+        return Ok(());
+    };
+    index.remove(bark_id);
+    if index.bark_ids.is_empty() {
+        tx.remove(key.as_bytes())?;
+    } else {
+        let value = serde_json::to_vec(&index).map_err(|error| {
+            ConflictableTransactionError::Abort(TxError::Serde(error.to_string()))
+        })?;
+        tx.insert(key.as_bytes(), value)?;
     }
+    Ok(())
+}
 
-    fn remove_from_geohash_index(&self, bark_id: &str, geohash: &str) -> Result<()> {
-        let key = format!("geo:{}", geohash);
-
-        if let Ok(mut index) = self.get_geohash_index(geohash) {
-            index.remove(bark_id);
-
-            if index.bark_ids.is_empty() {
-                self.db.remove(key.as_bytes())?;
-            } else {
-                let value = serde_json::to_vec(&index)?;
-                self.db.insert(key.as_bytes(), value)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn get_geohash_index(&self, geohash: &str) -> Result<GeoHashIndex> {
-        let key = format!("geo:{}", geohash);
-        let value = self
-            .db
-            .get(key.as_bytes())?
-            .ok_or_else(|| anyhow!("GeoHash 索引不存在"))?;
-
-        let index: GeoHashIndex = serde_json::from_slice(&value)?;
-        Ok(index)
-    }
-
-    fn increment_subscription_count(&self) -> Result<()> {
-        let key = b"stats:total";
-        let count = self.get_total_count()? + 1;
-        let value = (count as u64).to_be_bytes();
-        self.db.insert(key, &value[..])?;
-        Ok(())
-    }
-
-    fn decrement_subscription_count(&self) -> Result<()> {
-        let key = b"stats:total";
-        let count = self.get_total_count()?.saturating_sub(1);
-        let value = (count as u64).to_be_bytes();
-        self.db.insert(key, &value[..])?;
-        Ok(())
-    }
+fn geohash_index_from_tx(
+    tx: &TransactionalTree,
+    key: &str,
+    geohash: &str,
+) -> std::result::Result<Option<GeoHashIndex>, ConflictableTransactionError<TxError>> {
+    let Some(value) = tx.get(key.as_bytes())? else {
+        return Ok(None);
+    };
+    let index = serde_json::from_slice(&value)
+        .map_err(|error| {
+            ConflictableTransactionError::Abort(TxError::Serde(format!(
+                "GeoHash 索引数据格式错误: {geohash}: {error}"
+            )))
+        })?;
+    Ok(Some(index))
 }
 
 fn subscription_geohashes(subscription: &Subscription) -> HashSet<String> {
     subscription
         .normalized_locations()
         .into_iter()
-        .map(|location| geohash::encode(location.latitude, location.longitude))
+        .filter_map(|location| geohash::try_encode(location.latitude, location.longitude))
         .collect()
 }

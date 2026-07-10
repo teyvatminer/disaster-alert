@@ -11,6 +11,10 @@ pub fn vincenty_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f
     const TOLERANCE: f64 = 1e-12;
     const EPSILON: f64 = 1e-24;
 
+    if !lat1.is_finite() || !lat2.is_finite() || !lon1.is_finite() || !lon2.is_finite() {
+        return None;
+    }
+
     if !(-90.0..=90.0).contains(&lat1) || !(-90.0..=90.0).contains(&lat2) {
         return None;
     }
@@ -26,6 +30,9 @@ pub fn vincenty_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f
     }
 
     if lat_diff < 1e-9 && lon_diff < 1e-9 {
+        return Some(0.0);
+    }
+    if (lat1.abs() - 90.0).abs() < 1e-9 && (lat2.abs() - 90.0).abs() < 1e-9 && lat_diff < 1e-9 {
         return Some(0.0);
     }
 
@@ -58,7 +65,7 @@ pub fn vincenty_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f
         let sin_sq_sigma = term1 * term1 + term2 * term2;
 
         // 对跖点附近 `sin_sigma` 也会接近 0，不能只靠它判断两点重合
-        if sin_sq_sigma < EPSILON && lon_diff < 1e-6 {
+        if sin_sq_sigma < EPSILON && lat_diff < 1e-9 && lon_diff < 1e-6 {
             return Some(0.0);
         }
 
@@ -133,7 +140,10 @@ pub fn vincenty_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f
 }
 
 pub fn validate_coordinates(lat: f64, lon: f64) -> bool {
-    (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
 }
 
 #[cfg(test)]
@@ -175,15 +185,12 @@ mod tests {
         let dist = vincenty_distance(0.0, 0.0, 0.0, 180.0);
 
         // Vincenty 在对跖点附近允许不收敛
-        match dist {
-            Some(d) => {
-                assert!(
-                    d > 19900.0 && d < 20100.0,
-                    "Antipodal distance should be ~20000 km, got {} km",
-                    d
-                );
-            }
-            None => {}
+        if let Some(d) = dist {
+            assert!(
+                d > 19900.0 && d < 20100.0,
+                "Antipodal distance should be ~20000 km, got {} km",
+                d
+            );
         }
     }
 
@@ -206,6 +213,8 @@ mod tests {
         assert_eq!(vincenty_distance(0.0, 181.0, 0.0, 0.0), None);
         assert_eq!(vincenty_distance(0.0, 0.0, -91.0, 0.0), None);
         assert_eq!(vincenty_distance(0.0, 0.0, 0.0, -181.0), None);
+        assert_eq!(vincenty_distance(f64::NAN, 0.0, 0.0, 0.0), None);
+        assert_eq!(vincenty_distance(0.0, f64::INFINITY, 0.0, 0.0), None);
     }
 
     #[test]
@@ -233,5 +242,12 @@ mod tests {
         assert!(validate_coordinates(35.6762, 139.6503));
         assert!(!validate_coordinates(91.0, 0.0));
         assert!(!validate_coordinates(0.0, 181.0));
+        assert!(!validate_coordinates(f64::NAN, 0.0));
+    }
+
+    #[test]
+    fn test_polar_antipodal_not_zero() {
+        assert_ne!(vincenty_distance(90.0, 0.0, -90.0, 0.0), Some(0.0));
+        assert_eq!(vincenty_distance(90.0, 0.0, 90.0, 120.0), Some(0.0));
     }
 }

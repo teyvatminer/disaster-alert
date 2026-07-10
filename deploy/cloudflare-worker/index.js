@@ -3,13 +3,47 @@ export default {
     const url = new URL(request.url);
     // Worker 只托管静态前端；API 和健康检查转发到 Rust 后端
     if (url.pathname.startsWith("/api/") || url.pathname === "/health") {
-      return handleAPIRequest(request, env.BACKEND_URL);
+      return handleAPIRequest(request, env.BACKEND_URL, env.ALLOWED_ORIGINS);
     }
     return env.ASSETS.fetch(request);
   },
 };
 
-async function handleAPIRequest(request, backendURL) {
+function resolveAllowedOrigin(request, allowedOrigins) {
+  const origin = request.headers.get("Origin");
+  if (!origin) {
+    return "";
+  }
+
+  const configuredOrigins = (allowedOrigins || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (configuredOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return "";
+}
+
+function corsHeaders(allowedOrigin) {
+  const headers = {
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+  };
+
+  if (allowedOrigin) {
+    headers["Access-Control-Allow-Origin"] = allowedOrigin;
+    headers.Vary = "Origin";
+  }
+
+  return headers;
+}
+
+async function handleAPIRequest(request, backendURL, allowedOrigins) {
+  const allowedOrigin = resolveAllowedOrigin(request, allowedOrigins);
   try {
     const url = new URL(request.url);
     const targetBase = new URL(backendURL);
@@ -18,13 +52,8 @@ async function handleAPIRequest(request, backendURL) {
     // 预检请求由 Worker 直接返回，避免后端部署差异影响跨域
     if (request.method === "OPTIONS") {
       return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
-          "Access-Control-Max-Age": "86400",
-        },
+        status: allowedOrigin ? 204 : 403,
+        headers: corsHeaders(allowedOrigin),
       });
     }
 
@@ -38,7 +67,6 @@ async function handleAPIRequest(request, backendURL) {
       "x-forwarded-for",
       "x-real-ip",
       "connection",
-      "adventure",
     ];
 
     for (const [key, value] of request.headers.entries()) {
@@ -60,7 +88,7 @@ async function handleAPIRequest(request, backendURL) {
       headers: cleanHeaders,
       body:
         request.method !== "GET" && request.method !== "HEAD"
-          ? await request.arrayBuffer()
+          ? request.body
           : undefined,
       redirect: "follow",
     });
@@ -72,13 +100,19 @@ async function handleAPIRequest(request, backendURL) {
     });
 
     // 静态前端和后端可能分域部署，跨域头在边缘层统一补齐
-    modifiedResponse.headers.set("Access-Control-Allow-Origin", "*");
+    if (allowedOrigin) {
+      modifiedResponse.headers.set("Access-Control-Allow-Origin", allowedOrigin);
+      modifiedResponse.headers.append("Vary", "Origin");
+    }
 
     return modifiedResponse;
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message, stack: e.stack }), {
+    return new Response(JSON.stringify({ error: "Backend request failed" }), {
       status: 502,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders(allowedOrigin),
+      },
     });
   }
 }

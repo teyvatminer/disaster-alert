@@ -5,19 +5,13 @@
 /// 衰减模型为 `I = a * M - b * log10(D + c) + d`，震级分段处会混合两组系数，
 /// 避免估算值在边界附近跳变过大
 pub fn estimate_intensity(magnitude: f64, distance_km: f64) -> u8 {
-    if magnitude <= 0.0 || distance_km < 0.0 {
+    if !magnitude.is_finite() || !distance_km.is_finite() || magnitude <= 0.0 || distance_km < 0.0 {
         return 0;
     }
 
-    // 极近距离特殊处理（< 1km）
-    if distance_km < 1.0 {
-        let intensity = (magnitude * 1.5 - 2.5).clamp(0.0, 7.0);
-        return intensity.round() as u8;
-    }
-
     let (a, b, c, d) = intensity_coefficients(magnitude);
-
-    let intensity = a * magnitude - b * (distance_km + c).log10() + d;
+    let effective_distance = distance_km.max(1.0);
+    let intensity = a * magnitude - b * (effective_distance + c).log10() + d;
 
     intensity.clamp(0.0, 7.0).round() as u8
 }
@@ -89,5 +83,19 @@ mod tests {
 
         assert_eq!(estimate_intensity(5.1, 280.0), 2);
         assert_eq!(estimate_intensity(4.8, 280.0), 1);
+    }
+
+    #[test]
+    fn rejects_non_finite_inputs() {
+        assert_eq!(estimate_intensity(f64::NAN, 10.0), 0);
+        assert_eq!(estimate_intensity(5.0, f64::INFINITY), 0);
+        assert_eq!(estimate_intensity(f64::INFINITY, 10.0), 0);
+    }
+
+    #[test]
+    fn near_field_is_continuous_at_one_kilometer() {
+        let just_under = estimate_intensity(5.0, 0.99);
+        let at_one = estimate_intensity(5.0, 1.0);
+        assert!(at_one.abs_diff(just_under) <= 1);
     }
 }

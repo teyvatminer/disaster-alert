@@ -1,33 +1,40 @@
 # 地震预警 Bark 订阅系统
 
-基于 Rust 长驻后端的地震预警实时推送服务。后端同时监听 Wolfx WebSocket、维护订阅、通过 Bark 推送，并内置前端页面。GeoHash 空间索引实现位置匹配。
+基于 Rust 长驻后端的地震预警实时推送服务，后端监听 Wolfx WebSocket，按订阅者位置匹配后通过 Bark 推送，并内嵌前端页面
 
-示例: [http://eew.noctiro.moe](http://eew.noctiro.moe)
+示例：<http://eew.noctiro.moe>
+
+## 数据流
+
+1. Wolfx WebSocket 推送 JMA / 四川 / CENC / 福建地震预警消息到后端
+2. 后端解析消息，转换为通用格式，过滤演练 / 取消 / 过期 / 重复事件
+3. 用 GeoHash 邻居格子查出相关订阅，按震中距估算 JMA 震度并匹配通知级别
+4. 通过 Bark 向命中订阅推送预警，命中推送失败时自动清理无效 Bark Key
 
 ## 技术栈
 
-* **核心**: Rust, Axum, sled (DB), tokio-tungstenite (WS)
-* **前端**: 单文件 `web/index.html`，原生 JS, CartoCDN 地图
-* **部署**: 单二进制内嵌前端；可选 Cloudflare Worker / Vercel / Caddy / Nginx 作为边缘 adapter
+- **后端**：Rust、Axum、sled、tokio-tungstenite、reqwest（rustls）
+- **前端**：单文件 `web/index.html`，原生 JS、Leaflet + CartoCDN 地图
+- **部署**：后端单二进制内嵌前端；前端可由后端、Cloudflare Worker、Vercel 或任意静态平台托管
 
 ## 项目结构
 
 ```text
-backend/   Rust 后端，编译产物为单一二进制
-web/        前端源（唯一一份 index.html）
-deploy/     部署适配器
-  cloudflare-worker/   静态 + API 反代
-  vercel/              rewrites 反代
+backend/              Rust 后端，编译产物为单一二进制
+web/index.html         前端源文件，后端通过 include_str! 内嵌
+deploy/
+  cloudflare-worker/   托管前端 + 反代 API
+  vercel/              rewrite 反代
   caddy/               反向代理示例
   nginx/               反向代理示例
-  systemd/             守护进程示例
+  systemd/             后端守护进程示例
 ```
 
 ## 部署
 
-### 方式一：单二进制（推荐）
+后端必须运行，地震监听和推送只发生在后端进程；前端可以由后端内嵌、由边缘平台托管，或两者分离部署
 
-一个二进制同时提供前端页面、API 和地震监听推送，适合 VPS / NAS / Docker / systemd。
+### 后端
 
 ```bash
 cd backend
@@ -37,71 +44,69 @@ cargo build --release
 ./target/release/earthquake-alert-backend
 ```
 
-浏览器打开 `http://your-server:30010` 即可使用。前端已内嵌于二进制，无需额外静态文件。
+默认监听 `0.0.0.0:30010`，前端页面已内嵌在二进制里，浏览器访问 `http://your-server:30010` 即可使用
 
-### 方式二：Rust 后端 + Cloudflare Worker
-
-Worker 仅负责托管前端页面并把 `/api/*`、`/health` 转发到后端。
-
-```bash
-cd deploy/cloudflare-worker
-# 编辑 wrangler.toml，将 BACKEND_URL 改为后端地址
-wrangler deploy --env production
-```
-
-### 方式三：Rust 后端 + Vercel 静态前端
-
-`deploy/vercel/vercel.json` 把 `/api/*` 和 `/health` rewrite 到后端。把 `web/` 作为 Vercel 静态站点根目录，修改 `vercel.json` 中的 `YOUR_BACKEND_HOST` 后部署即可。
-
-### 方式四：Rust 后端 + Caddy 反代
-
-参见 `deploy/caddy/Caddyfile`，将域名改为自己的域名后，Caddy 会自动申请 HTTPS 证书并把整站反代到本机 `127.0.0.1:30010`。
-
-如果希望由 Caddy 托管 `web/` 静态文件，只把 `/api/*` 和 `/health` 反代到后端，使用 `deploy/caddy/Caddyfile.static`。
-
-### 方式五：Rust 后端 + Nginx 反代
-
-参见 `deploy/nginx/earthquake-alert.conf`，将 `/` 反代到本机 `127.0.0.1:30010`。
-
-### 纯静态前端跨域访问后端
-
-把 `web/index.html` 托管到任意静态平台（GitHub Pages、对象存储等），在页面加载前设置：
-
-```html
-<script>window.EEW_API_BASE = "https://api.example.com"</script>
-```
-
-即可让前端跨域访问独立后端。注意：地震监听和推送必须由后端进程承担，纯静态前端不能单独工作。
-
-### systemd 守护
-
-参见 `deploy/systemd/earthquake-alert.service`，按本机路径修改后：
+如果需要常驻，参考 `deploy/systemd/earthquake-alert.service`：
 
 ```bash
 sudo cp deploy/systemd/earthquake-alert.service /etc/systemd/system/
 sudo systemctl enable --now earthquake-alert
 ```
 
-### 环境变量
+## 前端托管
 
-在 `backend/` 下创建 `.env`，运行前导入环境变量，或通过系统环境变量配置。参见下方配置说明。
+### 方式一：后端内嵌（默认）
+
+上面的后端启动方式已经内嵌前端，无需额外配置，所以方式二到方式四只在需要分离托管前端时使用
+
+### 方式二：Cloudflare Worker
+
+`deploy/cloudflare-worker` 托管 `web/` 静态前端，并把 `/api/*`、`/health` 转发到后端
+
+```bash
+cd deploy/cloudflare-worker
+# 编辑 wrangler.toml，把 BACKEND_URL 改为后端地址
+wrangler deploy --env production
+```
+
+### 方式三：Vercel
+
+把 `web/` 作为 Vercel 静态站点根目录，`deploy/vercel/vercel.json` 把 `/api/*` 和 `/health` rewrite 到后端，部署前把 `vercel.json` 里的 `YOUR_BACKEND_HOST` 改成后端地址
+
+### 方式四：Caddy 或 Nginx 反代
+
+- `deploy/caddy/Caddyfile`：整站反代到本机 `127.0.0.1:30010`，自动申请 HTTPS
+- `deploy/caddy/Caddyfile.static`：Caddy 托管 `web/` 静态文件，只反代 `/api/*` 和 `/health`
+- `deploy/nginx/earthquake-alert.conf`：把 `/` 反代到本机 `127.0.0.1:30010`
+
+### 任意静态平台 + 跨域后端
+
+把 `web/index.html` 托管到 GitHub Pages、对象存储等任意静态平台，在页面加载前设置后端地址：
+
+```html
+<script>window.EEW_API_BASE = "https://api.example.com"</script>
+```
+
+这样前端可以跨域访问独立后端；需要在后端 `ALLOWED_ORIGINS` 中配置前端 Origin 才能跨域访问
+
+## 配置
+
+后端配置通过环境变量，在 `backend/` 下创建 `.env`，运行前导入或通过系统环境变量配置：
 
 ```bash
 cd backend
 cp .env.example .env
-# 编辑 .env 修改 SERVER_PORT 或 BARK_API_URL 等
+# 编辑 .env
 set -a; . ./.env; set +a
 ```
 
-
-## 配置说明
-
-### 后端环境变量
+配置值会在启动时校验；数值格式错误、重连下限大于上限、非正波速、无效并发上限等会直接导致服务启动失败。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `SERVER_HOST` | `0.0.0.0` | 监听地址 |
 | `SERVER_PORT` | `30010` | 服务端口 |
+| `ALLOWED_ORIGINS` | (空) | 允许跨域访问 API 的前端 Origin，多个值用逗号分隔；空表示不额外开放跨域 |
 | `DB_PATH` | `./data/earthquake.db` | 数据库路径 |
 | `BARK_API_URL` | `https://api.day.app` | Bark 服务器地址 |
 | `BARK_SOUND` | (空) | Bark 铃声名称，空表示使用默认 |
@@ -123,15 +128,35 @@ set -a; . ./.env; set +a
 | `MAX_CONCURRENT_NOTIFICATIONS` | `1000` | 并发推送上限 |
 | `HTTP_POOL_SIZE` | `200` | HTTP 连接池大小 |
 
-## 后端 API 接口
+## API
 
-* **订阅**: `POST /api/subscribe`
+所有接口返回统一 JSON：
 
-订阅保存成功后，服务端会通过 Bark 向该 `bark_id` 发送一条订阅成功确认提醒。
+```json
+{
+  "success": true,
+  "message": "订阅成功",
+  "data": {}
+}
+```
+
+失败时 `success` 为 `false`，`data` 字段省略，`message` 返回可展示的错误原因
+
+| 方法 | 路径 | 用途 | 成功响应 |
+| --- | --- | --- | --- |
+| `POST` | `/api/subscribe` | 发送 Bark 确认提醒成功后创建或覆盖订阅 | `200` |
+| `DELETE` | `/api/unsubscribe` | 按 Bark ID 删除订阅 | `200` |
+| `GET` | `/api/stats` | 返回订阅总数 | `200` |
+| `GET` | `/health` | 健康检查 | `200` |
+
+### `POST /api/subscribe`
+
+请求体：
 
 ```json
 {
   "bark_id": "key",
+  "bark_server": "https://api.day.app",
   "location_name": "东京",
   "latitude": 35.6,
   "longitude": 139.6,
@@ -146,17 +171,99 @@ set -a; . ./.env; set +a
 }
 ```
 
-* **退订**: `DELETE /api/unsubscribe`
+字段说明：
+
+| 字段 | 当前请求要求 | 说明 |
+| --- | --- | --- |
+| `bark_id` | 是 | Bark Key，只允许字母和数字，最长 64 字符 |
+| `bark_server` | 否 | 兼容字段；非空时必须是 HTTPS URL，当前推送服务地址由后端环境变量 `BARK_API_URL` 控制 |
+| `location_name` | 是 | 单地点订阅名称，`locations` 为空时使用 |
+| `latitude` / `longitude` | 是 | 单地点坐标，`locations` 为空时使用；当前反序列化仍要求传入这两个字段 |
+| `locations` | 建议传入 | 监测地点列表，最多 3 个，有效坐标范围为纬度 `-90..90`、经度 `-180..180` |
+| `locations[].name` | 否 | 地点名称，最多 80 个字符 |
+| `notify_bands` | 是 | 通知规则列表，最多 3 条，烈度范围不能重叠 |
+| `notify_bands[].min` / `max` | 是 | 匹配的预估 JMA 烈度范围，取值 `0..99` |
+| `notify_bands[].level` | 是 | Bark 中断级别，只允许 `passive`、`active`、`critical` |
+| `notify_bands[].label` | 否 | 前端展示标签，最多 32 个字符 |
+
+兼容说明：
+
+- 新版前端使用 `locations`，旧版单地点字段 `location_name`、`latitude`、`longitude` 仍会保留在请求体中
+- 如果 `locations` 非空，后端以 `locations[0]` 作为主地点，并忽略旧版单地点字段
+- `critical` 规则的 `max` 小于 `7` 时，后端会扩展为 `99`
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "message": "订阅成功",
+  "data": { "saved": true }
+}
+```
+
+常见失败：
+
+| 状态码 | 原因 |
+| --- | --- |
+| `400` | Bark ID 为空、过长或包含非字母数字字符 |
+| `400` | 没有有效监测地点 |
+| `400` | 通知规则为空、超过 3 条、级别非法或烈度范围重叠 |
+| `502` | Bark 确认提醒发送失败，订阅未保存 |
+| `500` | 数据库存储失败 |
+
+### `DELETE /api/unsubscribe`
+
+请求体：
 
 ```json
 { "bark_id": "key" }
 ```
 
-* **状态**: `GET /health`
+成功响应：
 
-* **统计**: `GET /api/stats`
+```json
+{
+  "success": true,
+  "message": "已取消订阅"
+}
+```
+
+常见失败：
+
+| 状态码 | 原因 |
+| --- | --- |
+| `400` | Bark ID 为空、过长或包含非字母数字字符 |
+| `404` | 删除失败，通常表示没有对应订阅或数据库删除失败 |
+
+### `GET /api/stats`
+
+返回订阅总数，不返回 Bark ID、位置、通知规则或订阅时间：
+
+```json
+{
+  "success": true,
+  "message": "统计成功",
+  "data": { "total_subscriptions": 12 }
+}
+```
+
+### `GET /health`
+
+健康检查只表示 HTTP 服务可响应：
+
+```json
+{
+  "success": true,
+  "message": "OK"
+}
+```
+
+### 隐私边界
+
+系统不提供「输入 Bark Key 查询订阅内容」的接口，Bark Key 不能反查用户位置、通知级别或订阅时间，详见 [CONTRIBUTING.md](CONTRIBUTING.md) 中的隐私确认
 
 ## 致谢
 
-* 数据源：[wolfx.jp](https://ws-api.wolfx.jp)
-* 推送服务：[Bark](https://github.com/Finb/Bark)
+- 数据源：[wolfx.jp](https://ws-api.wolfx.jp)
+- 推送服务：[Bark](https://github.com/Finb/Bark)

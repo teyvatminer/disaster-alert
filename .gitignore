@@ -1,7 +1,6 @@
 # Rust 编译产物
 target
 backend/target
-Cargo.lock
 
 # Node.js
 node_modules
@@ -13,11 +12,15 @@ deploy/cloudflare-worker/.wrangler
 
 # 数据库
 backend/data
-*.db
+backend/**/*.db
 
 # 环境变量
 .env
+.env.*
+!.env.example
 backend/.env
+backend/.env.*
+!backend/.env.example
 
 # 日志
 *.log

@@ -77,11 +77,12 @@ impl Subscription {
         bands
             .into_iter()
             .find(|band| {
-                validate_bark_level(&band.level)
+                let normalized = normalize_bark_level(&band.level);
+                validate_bark_level(&normalized)
                     && estimated_intensity >= band.min
                     && estimated_intensity <= band.max
             })
-            .map(|band| band.level.trim().to_ascii_lowercase())
+            .map(|band| normalize_bark_level(&band.level))
     }
 }
 
@@ -109,16 +110,29 @@ pub fn validate_bark_level(level: &str) -> bool {
     matches!(level, "passive" | "active" | "critical")
 }
 
+pub fn normalize_bark_level(level: &str) -> String {
+    level.trim().to_ascii_lowercase()
+}
+
 pub fn valid_coordinate(lat: f64, lon: f64) -> bool {
-    (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
 }
 
 pub fn mask_bark_id(value: &str) -> String {
     let value = value.trim();
-    if value.len() <= 6 {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= 6 {
         "***".to_string()
     } else {
-        format!("{}***{}", &value[..3], &value[value.len() - 3..])
+        let prefix = chars.iter().take(3).collect::<String>();
+        let suffix = chars
+            .iter()
+            .skip(chars.len().saturating_sub(3))
+            .collect::<String>();
+        format!("{}***{}", prefix, suffix)
     }
 }
 
@@ -265,6 +279,8 @@ pub struct FujianEew {
     // 上游字段拼写为 Magunitude，反序列化时必须保留这个拼写
     #[serde(rename = "Magunitude")]
     pub magnitude: f64,
+    #[serde(rename = "Depth", default)]
+    pub depth: f64,
     #[serde(rename = "isFinal")]
     pub is_final: bool,
     #[serde(rename = "Cancel", alias = "isCancel", default)]
@@ -386,7 +402,7 @@ impl EarthquakeData {
                 latitude: data.latitude,
                 longitude: data.longitude,
                 magnitude: data.magnitude,
-                depth: 0.0,
+                depth: data.depth,
                 max_intensity: "未知".to_string(),
                 region: data.hypocenter.clone(),
                 origin_time: data.origin_time.clone(),
@@ -394,19 +410,15 @@ impl EarthquakeData {
             }),
             EarthquakeData::Unknown(data) => {
                 // fallback 只接受推送所需的最小字段集合，避免误推结构不明确的数据
-                let latitude = data.data.get("Latitude").and_then(|v| v.as_f64())?;
-                let longitude = data.data.get("Longitude").and_then(|v| v.as_f64())?;
+                let latitude = json_f64(&data.data, &["Latitude"])?;
+                let longitude = json_f64(&data.data, &["Longitude"])?;
                 let magnitude = data
                     .data
                     .get("Magnitude")
-                    .or_else(|| data.data.get("Magunitude"))
-                    .and_then(|v| v.as_f64())?;
+                    .or_else(|| data.data.get("Magunitude"));
+                let magnitude = magnitude.and_then(json_value_f64)?;
 
-                let depth = data
-                    .data
-                    .get("Depth")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
+                let depth = json_f64(&data.data, &["Depth"]).unwrap_or(0.0);
 
                 let max_intensity = data
                     .data
@@ -492,6 +504,19 @@ fn json_u32(data: &serde_json::Value, keys: &[&str]) -> u32 {
                 .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
         })
         .unwrap_or(0)
+}
+
+fn json_f64(data: &serde_json::Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| data.get(*key))
+        .and_then(json_value_f64)
+}
+
+fn json_value_f64(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+        .filter(|number| number.is_finite())
 }
 
 fn json_bool(data: &serde_json::Value, keys: &[&str]) -> bool {
