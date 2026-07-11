@@ -44,6 +44,7 @@ struct BarkMessage<'a> {
     title: &'a str,
     subtitle: &'a str,
     body: &'a str,
+    use_alert_sound: bool,
 }
 
 /// Bark 推送客户端，负责受限并发的可靠投递。
@@ -174,87 +175,44 @@ impl BarkNotifier {
             title: &display_title,
             subtitle: &subtitle,
             body: &body,
+            use_alert_sound: true,
         })
         .await
     }
 
     pub async fn send_subscription_confirm(&self, subscription: &Subscription) -> Result<()> {
-        let title = "灾害预警订阅成功";
-        let subtitle = if subscription.targets.len() > 1 {
-            format!("已保存 {} 个监测地点", subscription.targets.len())
-        } else {
-            subscription
-                .targets
-                .first()
-                .map(|target| target.label.trim())
-                .filter(|name| !name.is_empty())
-                .map_or_else(
-                    || "已保存监测地点".to_string(),
-                    |name| format!("已保存 {name}"),
-                )
-        };
-        let mut lines = vec!["你将按当前类别和通知级别规则接收灾害信息".to_string()];
-        for target in &subscription.targets {
-            let name = if target.label.trim().is_empty() {
-                "未命名地点"
-            } else {
-                target.label.trim()
-            };
-            lines.push(format!(
-                "{}: {:.4}, {:.4}",
-                name, target.point.latitude, target.point.longitude
-            ));
-        }
-        let body = lines.join("\n");
+        let title = "灾害预警接收测试";
+        let (subtitle, body) = subscription_confirmation_summary(subscription);
 
         self.send_notification(BarkMessage {
             bark_url: subscription.bark_base_url(),
             device_key: subscription.device_key(),
-            level: "active",
+            level: "timeSensitive",
             title,
             subtitle: &subtitle,
             body: &body,
+            use_alert_sound: false,
         })
         .await
     }
 
     async fn send_notification(&self, message: BarkMessage<'_>) -> Result<()> {
+        let level = normalize_bark_level(message.level);
+        let payload = bark_payload(&message, &self.push_config, level);
         let BarkMessage {
             bark_url,
             device_key,
-            level,
-            title,
-            subtitle,
-            body,
+            level: _,
+            title: _,
+            subtitle: _,
+            body: _,
+            use_alert_sound: _,
         } = message;
-        let level = match level.trim().to_ascii_lowercase().as_str() {
-            "passive" => "passive",
-            "active" => "active",
-            "critical" => "critical",
-            _ => "critical",
-        };
         anyhow::ensure!(
             self.allows_bark_url(bark_url),
             "订阅使用的 Bark URL 已被管理员停用，请重新配置"
         );
         let url = format!("{bark_url}/push");
-        let mut payload = serde_json::json!({
-            "device_key": device_key,
-            "title": title,
-            "subtitle": subtitle,
-            "body": body,
-            "group": self.push_config.group,
-            "level": level,
-        });
-        if level != "passive" {
-            payload["volume"] = serde_json::json!(self.push_config.volume);
-            if self.push_config.call {
-                payload["call"] = serde_json::json!("1");
-            }
-            if let Some(sound) = &self.push_config.sound {
-                payload["sound"] = serde_json::json!(sound);
-            }
-        }
 
         let mut retries = 0;
         let max_retries = 2;
@@ -366,6 +324,72 @@ impl BarkNotifier {
     }
 }
 
+fn subscription_confirmation_summary(subscription: &Subscription) -> (String, String) {
+    let target_names = subscription
+        .targets
+        .iter()
+        .map(|target| {
+            let name = target.label.trim();
+            if name.is_empty() {
+                "未命名地点"
+            } else {
+                name
+            }
+        })
+        .collect::<Vec<_>>();
+    let category_names = subscription
+        .alerts
+        .iter()
+        .map(|alert| alert.category().label())
+        .collect::<Vec<_>>();
+    let subtitle = format!(
+        "Bark 通知通道正常 · {} 个地点 · {} 类预警",
+        target_names.len(),
+        category_names.len()
+    );
+    let body = format!(
+        "监测地点：{}\n预警类型：{}\n请返回网页查看订阅保存结果。",
+        target_names.join("、"),
+        category_names.join("、")
+    );
+    (subtitle, body)
+}
+
+fn normalize_bark_level(level: &str) -> &'static str {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "passive" => "passive",
+        "active" => "active",
+        "timesensitive" => "timeSensitive",
+        "critical" => "critical",
+        _ => "critical",
+    }
+}
+
+fn bark_payload(
+    message: &BarkMessage<'_>,
+    push_config: &BarkPushConfig,
+    level: &str,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "device_key": message.device_key,
+        "title": message.title,
+        "subtitle": message.subtitle,
+        "body": message.body,
+        "group": push_config.group,
+        "level": level,
+    });
+    if level != "passive" && message.use_alert_sound {
+        payload["volume"] = serde_json::json!(push_config.volume);
+        if push_config.call {
+            payload["call"] = serde_json::json!("1");
+        }
+        if let Some(sound) = &push_config.sound {
+            payload["sound"] = serde_json::json!(sound);
+        }
+    }
+    payload
+}
+
 impl BarkPushConfig {
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(self.volume <= 10, "BARK_VOLUME must be in 0..=10");
@@ -436,12 +460,99 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_chars;
+    use super::{
+        BarkMessage, BarkPushConfig, bark_payload, normalize_bark_level,
+        subscription_confirmation_summary, truncate_chars,
+    };
+    use crate::models::{
+        AlertRule, DisasterCategory, GeoPoint, MonitoringTarget, NotificationDestination,
+        Subscription,
+    };
 
     #[test]
     fn truncation_preserves_utf8_boundaries() {
         let truncated = truncate_chars("灾害预警abcdef", 6);
         assert_eq!(truncated, "灾害预警a…");
         assert_eq!(truncated.chars().count(), 6);
+    }
+
+    #[test]
+    fn subscription_confirmation_is_clear_without_coordinates() {
+        let subscription = Subscription::new(
+            NotificationDestination::Bark {
+                base_url: "https://api.day.app".to_string(),
+                device_key: "abc123".to_string(),
+            },
+            vec![MonitoringTarget {
+                label: "东京".to_string(),
+                point: GeoPoint {
+                    latitude: 35.6,
+                    longitude: 139.6,
+                },
+                region: crate::models::AdministrativeRegion::default(),
+            }],
+            vec![AlertRule::default_for(DisasterCategory::EarthquakeWarning)],
+        );
+
+        let (subtitle, body) = subscription_confirmation_summary(&subscription);
+
+        assert_eq!(subtitle, "Bark 通知通道正常 · 1 个地点 · 1 类预警");
+        assert!(body.contains("监测地点：东京"));
+        assert!(body.contains("预警类型：地震预警"));
+        assert!(!body.contains("35.6"));
+        assert!(!body.contains("139.6"));
+    }
+
+    #[test]
+    fn subscription_confirmation_requests_a_banner_without_repeated_ringing() {
+        let message = BarkMessage {
+            bark_url: "https://api.day.app",
+            device_key: "abc123",
+            level: "timeSensitive",
+            title: "灾害预警接收测试",
+            subtitle: "接收测试成功",
+            body: "订阅配置正在保存",
+            use_alert_sound: false,
+        };
+        let config = BarkPushConfig {
+            sound: Some("alarm".to_string()),
+            volume: 10,
+            group: "灾害预警".to_string(),
+            call: true,
+        };
+        let level = normalize_bark_level(message.level);
+
+        let payload = bark_payload(&message, &config, level);
+
+        assert_eq!(payload["level"], "timeSensitive");
+        assert!(payload.get("sound").is_none());
+        assert!(payload.get("volume").is_none());
+        assert!(payload.get("call").is_none());
+    }
+
+    #[test]
+    fn disaster_alerts_keep_the_configured_alert_sound() {
+        let message = BarkMessage {
+            bark_url: "https://api.day.app",
+            device_key: "abc123",
+            level: "critical",
+            title: "地震预警",
+            subtitle: "接收测试",
+            body: "测试内容",
+            use_alert_sound: true,
+        };
+        let config = BarkPushConfig {
+            sound: Some("alarm".to_string()),
+            volume: 10,
+            group: "灾害预警".to_string(),
+            call: true,
+        };
+
+        let payload = bark_payload(&message, &config, normalize_bark_level(message.level));
+
+        assert_eq!(payload["level"], "critical");
+        assert_eq!(payload["sound"], "alarm");
+        assert_eq!(payload["volume"], 10);
+        assert_eq!(payload["call"], "1");
     }
 }

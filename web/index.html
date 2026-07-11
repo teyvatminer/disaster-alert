@@ -1960,11 +1960,38 @@
       try { return value ? JSON.parse(value) : null; } catch { return null; }
     }
 
-    async function parseApiResponse(res) {
+    function cleanApiMessage(value) {
+      if (typeof value !== "string") return "";
+      const message = value.replace(/\s+/g, " ").trim();
+      if (!message || /<\s*(?:!doctype|html|head|body)\b/i.test(message)) return "";
+      return message.length > 240 ? `${message.slice(0, 239)}…` : message;
+    }
+
+    function httpFailureMessage(res) {
+      if (res.ok) return "服务返回了无法识别的响应";
+      if ([502, 503, 504].includes(res.status)) return "服务暂时不可用，请稍后重试";
+      if (res.status >= 500) return "服务器处理请求时发生错误，请稍后重试";
+      if (res.status === 429) return "请求过于频繁，请稍后重试";
+      if (res.status === 404) return "请求的服务不存在";
+      if (res.status === 413) return "提交的内容过大";
+      if (res.status === 400) return "提交内容无效，请检查后重试";
+      return `请求失败（HTTP ${res.status || "未知"}）`;
+    }
+
+    async function parseApiResponse(res, fallbackMessage = "") {
       const text = await res.text();
       const json = safeJson(text);
-      if (json && typeof json === "object") return json;
-      return { success: res.ok, message: text.trim() || res.statusText || "请求失败" };
+      if (json && typeof json === "object" && !Array.isArray(json)) {
+        return {
+          ...json,
+          success: json.success === true,
+          message: cleanApiMessage(json.message) || cleanApiMessage(fallbackMessage) || httpFailureMessage(res),
+        };
+      }
+      return {
+        success: false,
+        message: cleanApiMessage(fallbackMessage) || httpFailureMessage(res),
+      };
     }
 
     function escapeHtml(value) {
@@ -2231,13 +2258,16 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const json = await parseApiResponse(res);
+        const fallbackMessage = res.status === 502
+          ? "Bark 接收测试失败，请检查 Bark Key；若确认无误，请稍后重试"
+          : "";
+        const json = await parseApiResponse(res, fallbackMessage);
         if (!res.ok || !json.success) throw new Error(json.message || "保存失败");
         lastSubmittedSignature = submittedSignature;
         lastSubmittedIdentity = currentDestinationIdentity();
         updateDraftStatus();
         flushDraft();
-        show("订阅已覆盖保存", "success");
+        show("订阅已保存，Bark 确认通知已发送", "success");
         refreshStats();
       } catch (error) {
         show(error.message || "网络请求失败", "error");

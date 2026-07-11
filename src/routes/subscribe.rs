@@ -156,10 +156,9 @@ pub async fn subscribe_handler(
         );
         return (
             StatusCode::BAD_GATEWAY,
-            Json(ApiResponse::<SubscribeResponse>::error(format!(
-                "订阅确认提醒发送失败，订阅未保存: {}",
-                error
-            ))),
+            Json(ApiResponse::<SubscribeResponse>::error(
+                "Bark 接收测试失败，请检查 Bark Key；若确认无误，请稍后重试。订阅未保存",
+            )),
         );
     }
 
@@ -175,7 +174,7 @@ pub async fn subscribe_handler(
             (
                 StatusCode::OK,
                 Json(ApiResponse::success(
-                    "订阅成功",
+                    "订阅已保存，确认通知已发送",
                     Some(SubscribeResponse::from(subscription)),
                 )),
             )

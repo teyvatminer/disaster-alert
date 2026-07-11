@@ -114,7 +114,7 @@ vim .env
 ```json
 {
   "success": true,
-  "message": "订阅成功",
+  "message": "订阅已保存，确认通知已发送",
   "data": {}
 }
 ```
@@ -125,7 +125,7 @@ vim .env
 
 | 方法 | 路径 | 用途 | 成功响应 |
 | --- | --- | --- | --- |
-| `POST` | `/api/subscribe` | 发送 Bark 确认提醒成功后创建或覆盖订阅 | `200` |
+| `POST` | `/api/subscribe` | 发送 Bark 接收测试通知成功后创建或覆盖订阅 | `200` |
 | `GET` | `/api/bark-urls` | 返回网页端可选择的 Bark URL 白名单 | `200` |
 | `GET` | `/api/subscription-options` | 返回灾害类别、来源目录和默认阈值 | `200` |
 | `DELETE` | `/api/unsubscribe` | 按 Bark 服务与 Key 删除订阅 | `200` |
@@ -212,13 +212,14 @@ vim .env
 - `/api/subscription-options` 返回按灾种组织的来源目录及每种规则的完整默认值，Web 界面以此生成配置
 - 订阅身份是 `destination.base_url` 与 `destination.device_key` 的组合；同一 Key 可用于不同 Bark 服务，分别保存和删除
 - 订阅和退订 JSON 请求体上限为 32 KiB；超限或结构无效时返回统一 JSON `400`
+- Bark 接收测试通知使用 `timeSensitive` 级别以提高即时横幅的可见性，但不会使用灾害专用的 `BARK_SOUND`、`BARK_VOLUME` 或 `BARK_CALL`；最终是否显示横幅仍取决于设备的 Bark 通知权限和系统设置
 
 成功响应：
 
 ```json
 {
   "success": true,
-  "message": "订阅成功",
+  "message": "订阅已保存，确认通知已发送",
   "data": { "saved": true }
 }
 ```
@@ -231,7 +232,7 @@ vim .env
 | `400` | Bark URL 无效或不在白名单中 |
 | `400` | 没有有效监测地点 |
 | `400` | 灾害规则为空、类别重复、来源不属于对应灾种或阈值超出范围 |
-| `502` | Bark 确认提醒发送失败，订阅未保存 |
+| `502` | Bark 接收测试通知发送失败，订阅未保存 |
 | `500` | 数据库存储失败 |
 
 ### `DELETE /api/unsubscribe`
