@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderValue, Method},
     routing::{delete, get, post},
 };
-use config::Config;
+use config::{Config, load_dotenv};
 use db::Database;
 use providers::{FanStudioSource, WolfxSource};
 use routes::{
@@ -33,8 +33,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const SUBSCRIPTION_BODY_LIMIT_BYTES: usize = 32 * 1024;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let dotenv_path = load_dotenv().context("failed to load .env configuration")?;
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -43,6 +44,18 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    if let Some(path) = dotenv_path {
+        tracing::info!(event = "config.dotenv_loaded", path = %path.display(), "config.dotenv_loaded");
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to create Tokio runtime")?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     tracing::info!(
         event = "config.loaded",

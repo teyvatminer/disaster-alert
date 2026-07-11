@@ -2,12 +2,13 @@
 name = "disaster-alert"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97"
 publish = false
 
 [dependencies]
 anyhow = { version = "1.0.103", default-features = false, features = ["std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+dotenvy = { version = "0.15.7", default-features = false }
 futures-util = { version = "0.3.32", default-features = false, features = ["sink", "std"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "std"] }

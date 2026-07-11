@@ -53,7 +53,6 @@ Cargo.toml             Rust crate 和构建配置
 
 ```bash
 cp .env.example .env
-set -a; . ./.env; set +a
 cargo build --release
 ./target/release/disaster-alert
 ```
@@ -62,15 +61,15 @@ cargo build --release
 
 ## 配置
 
-应用通过环境变量配置。在仓库根目录创建 `.env`，运行前导入或通过进程管理器设置：
+应用启动时自动读取当前工作目录的 `.env`，也支持由 shell 或进程管理器设置环境变量。进程环境变量的优先级高于 `.env`，`.env` 不存在时使用进程环境变量或默认值：
 
 ```bash
 cp .env.example .env
-# 编辑 .env
-set -a; . ./.env; set +a
+vim .env
+./target/release/disaster-alert
 ```
 
-配置值会在启动时校验；数值格式错误、重连下限大于上限、非正波速、无效并发上限等会直接导致服务启动失败。
+配置值会在启动时校验；`.env` 语法错误、数值格式错误、重连下限大于上限、非正波速、无效并发上限等会直接导致服务启动失败。服务由其他目录启动时，需要将工作目录设置为 `.env` 所在目录，或直接通过进程管理器注入环境变量。
 
 `BARK_URL_ALLOWLIST` 支持 HTTP/HTTPS、域名或 IP、显式端口和反向代理子路径，例如 `https://api.day.app`、`http://192.168.1.10:8080`、`https://example.com/bark`。不允许凭据、查询参数或 fragment；末尾 `/` 会被移除，推送时统一追加 `/push`。配置顺序会原样提供给网页端；网页端首次使用时选择第一项。服务端不会把第一项当作发送失败或历史地址失效时的回退目标。
 

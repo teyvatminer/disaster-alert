@@ -1,6 +1,18 @@
 use anyhow::{Context, Result, bail};
 use std::env;
+use std::path::PathBuf;
 use url::Url;
+
+/// Load configuration values from `.env` in the current working directory.
+/// Existing process environment variables take precedence.
+pub fn load_dotenv() -> Result<Option<PathBuf>> {
+    let path = PathBuf::from(".env");
+    match dotenvy::from_path(&path) {
+        Ok(()) => Ok(Some(path)),
+        Err(error) if error.not_found() => Ok(None),
+        Err(error) => Err(error).context("failed to read .env"),
+    }
+}
 
 /// 应用配置
 #[derive(Debug, Clone)]

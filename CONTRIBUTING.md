@@ -16,7 +16,6 @@
 
 ```bash
 cp .env.example .env
-set -a; . ./.env; set +a
 cargo run
 ```
 
