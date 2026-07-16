@@ -28,6 +28,7 @@ const MAX_LOCATION_NAME_CHARS: usize = 80;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) instance_terms_accepted: bool,
     pub(crate) storage: Storage,
     subscriptions: SubscriptionManager,
     bark_notifier: BarkNotifier,
@@ -55,6 +56,7 @@ impl AppState {
         let subscriptions = storage.subscription_manager();
         let bark_urls = bark_notifier.allowed_bark_urls();
         Self {
+            instance_terms_accepted: false,
             storage,
             subscriptions,
             bark_notifier,
@@ -72,6 +74,11 @@ impl AppState {
             subscription_concurrency: Arc::new(Semaphore::new(16)),
             subscription_confirmations,
         }
+    }
+
+    pub(crate) fn with_instance_terms_accepted(mut self, accepted: bool) -> Self {
+        self.instance_terms_accepted = accepted;
+        self
     }
 }
 

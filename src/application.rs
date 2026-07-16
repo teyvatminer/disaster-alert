@@ -53,6 +53,7 @@ async fn run() -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     tracing::info!(
         event = "config.loaded",
+        instance_terms_accepted = config.instance_terms_accepted,
         server_host = %config.server_host,
         server_port = config.server_port,
         db_path = %config.db_path,
@@ -62,6 +63,13 @@ async fn run() -> Result<()> {
         http_pool_size = config.http_pool_size,
         "config.loaded"
     );
+    if !config.instance_terms_accepted {
+        tracing::warn!(
+            event = "config.instance_terms_not_accepted",
+            variable = "INSTANCE_TERMS_ACCEPTED",
+            "config.instance_terms_not_accepted"
+        );
+    }
 
     let db_path = config.db_path.clone();
     let storage = tokio::task::spawn_blocking(move || Storage::open(db_path))
@@ -122,7 +130,8 @@ async fn run() -> Result<()> {
         notification_links.clone(),
         subscription_confirmations.clone(),
         config.max_concurrent_notifications,
-    );
+    )
+    .with_instance_terms_accepted(config.instance_terms_accepted);
     if pruned_contexts > 0 {
         tracing::info!(
             event = "database.notification_contexts_pruned",

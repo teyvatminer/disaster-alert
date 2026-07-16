@@ -22,6 +22,7 @@ pub(crate) fn load_dotenv() -> Result<Option<PathBuf>> {
 /// 应用配置
 #[derive(Debug)]
 pub(crate) struct Config {
+    pub(crate) instance_terms_accepted: bool,
     pub(crate) server_host: String,
     pub(crate) server_port: u16,
     pub(crate) shutdown_timeout_seconds: u64,
@@ -65,6 +66,7 @@ impl Config {
             .map_or(32, |threads| threads.get().saturating_mul(16))
             .clamp(16, 256);
         let config = Self {
+            instance_terms_accepted: env_bool("INSTANCE_TERMS_ACCEPTED", false)?,
             server_host: env_string("SERVER_HOST", "0.0.0.0"),
             server_port: env_parse("SERVER_PORT", 30010)?,
             shutdown_timeout_seconds: env_parse("SHUTDOWN_TIMEOUT_SECONDS", 15)?,
