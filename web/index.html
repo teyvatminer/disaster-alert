@@ -554,16 +554,21 @@
     button.danger { color: var(--err); background: var(--err-bg); }
     button:disabled { opacity: .65; cursor: wait; }
     .instance-terms-dialog {
+      position: fixed;
+      inset: 0;
+      z-index: 3000;
       width: min(620px, calc(100% - 32px));
       max-height: calc(100dvh - 32px);
+      margin: auto;
       padding: 0;
       border: 1px solid var(--line);
       border-radius: 8px;
       color: var(--text);
       background: var(--panel);
-      box-shadow: 0 24px 72px rgba(0, 0, 0, .3);
+      box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .62), 0 24px 72px rgba(0, 0, 0, .3);
       overflow: auto;
     }
+    .instance-terms-dialog.is-modal { box-shadow: 0 24px 72px rgba(0, 0, 0, .3); }
     .instance-terms-dialog::backdrop { background: rgba(0, 0, 0, .62); }
     .instance-terms-dialog:not([open]) { display: none; }
     .instance-terms-heading {
@@ -823,9 +828,21 @@
     {
       const instanceTermsDialog = document.querySelector("#instance-terms-dialog");
       if (instanceTermsDialog) {
+        const dismissButton = instanceTermsDialog.querySelector("#dismiss-instance-terms");
         instanceTermsDialog.addEventListener("cancel", (event) => event.preventDefault());
-        instanceTermsDialog.querySelector("#dismiss-instance-terms").addEventListener("click", () => instanceTermsDialog.close());
-        instanceTermsDialog.showModal();
+        dismissButton?.addEventListener("click", () => {
+          if (typeof instanceTermsDialog.close === "function") instanceTermsDialog.close();
+          else instanceTermsDialog.removeAttribute("open");
+        });
+        if (typeof instanceTermsDialog.showModal === "function") {
+          instanceTermsDialog.removeAttribute("open");
+          try {
+            instanceTermsDialog.showModal();
+            instanceTermsDialog.classList.add("is-modal");
+          } catch {
+            instanceTermsDialog.setAttribute("open", "");
+          }
+        }
       }
     }
   </script>
@@ -974,6 +991,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
   <script>
     const api = (window.DISASTER_API_BASE || window.location.origin).replace(/\/$/, "");
+    const instanceTermsAccepted = !document.querySelector("#instance-terms-dialog");
     const storageKey = "disaster_subscription_draft_v3";
     const legacyStorageKey = "disaster_subscription_draft_v2";
     const form = document.querySelector("#subscribe-form");
@@ -1052,7 +1070,8 @@
 
     function setSubscriptionRequestInFlight(inFlight) {
       subscriptionRequestInFlight = inFlight;
-      submit.disabled = inFlight || !configurationReady;
+      submit.disabled = inFlight || !configurationReady || !instanceTermsAccepted;
+      submit.title = instanceTermsAccepted ? "" : "实例部署者确认责任声明后才能保存订阅";
       unsubscribe.disabled = inFlight;
       resetAlertRules.disabled = inFlight || !configurationReady;
       startAddLocation.disabled = inFlight || subscriptionDraft.targets.length >= 3 || uiState.locationMode !== "overview";
@@ -2032,7 +2051,9 @@
     }
 
     function updateDraftStatus() {
-      if (!lastSubmittedSignature) {
+      if (!instanceTermsAccepted) {
+        draftStatus.textContent = "当前实例未确认部署责任，不能新增或覆盖订阅；仍可取消已有订阅。";
+      } else if (!lastSubmittedSignature) {
         draftStatus.textContent = "配置草稿保存在当前浏览器；Bark Key 不会保存。";
       } else if (draftSignature() === lastSubmittedSignature && currentDestinationIdentity() === lastSubmittedIdentity) {
         draftStatus.textContent = "本浏览器中的配置已提交。";
@@ -2423,6 +2444,7 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (!instanceTermsAccepted) return show("当前实例尚未确认部署责任，不能新增或覆盖订阅", "error");
       if (!configurationReady) return show("订阅配置尚未加载完成", "error");
       if (alertEntry("earthquake_warning")?.enabled && !commitBands()) return show("请修正通知级别规则", "error");
       const alertRuleError = validateAlertRules();

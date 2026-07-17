@@ -25,6 +25,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_LOCATIONS: usize = 3;
 const MAX_LOCATION_NAME_CHARS: usize = 80;
+const INSTANCE_TERMS_REQUIRED_MESSAGE: &str = "当前实例尚未确认部署责任，暂不接受新增或覆盖订阅";
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -129,6 +130,9 @@ pub(crate) async fn subscribe_handler(
     State(state): State<AppState>,
     payload: Result<Json<SubscribeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    if let Err(response) = require_subscription_creation_enabled(state.instance_terms_accepted) {
+        return response;
+    }
     let Json(payload) = match payload {
         Ok(payload) => payload,
         Err(_) => {
@@ -284,6 +288,19 @@ pub(crate) async fn subscribe_handler(
                 )),
             )
         }
+    }
+}
+
+fn require_subscription_creation_enabled(
+    instance_terms_accepted: bool,
+) -> std::result::Result<(), (StatusCode, Json<ApiResponse<SubscribeResponse>>)> {
+    if instance_terms_accepted {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::error(INSTANCE_TERMS_REQUIRED_MESSAGE)),
+        ))
     }
 }
 
@@ -598,6 +615,20 @@ mod tests {
         assert!(try_acquire_subscription_slot(&concurrency).is_err());
         drop(held);
         assert!(try_acquire_subscription_slot(&concurrency).is_ok());
+    }
+
+    #[test]
+    fn subscription_creation_requires_accepted_instance_terms() {
+        assert!(require_subscription_creation_enabled(true).is_ok());
+
+        let result = require_subscription_creation_enabled(false);
+        assert!(result.is_err());
+        if let Err((status, Json(response))) = result {
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(!response.success);
+            assert_eq!(response.message, INSTANCE_TERMS_REQUIRED_MESSAGE);
+            assert!(response.data.is_none());
+        }
     }
 
     #[test]

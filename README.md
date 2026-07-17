@@ -33,7 +33,7 @@ cargo build --release
 - `ALERT_DETAIL_BASE_URL`：手机可以访问的服务地址。生产环境必须使用 HTTPS
 - `ALERT_SIGNING_KEY`：用于保护通知详情链接的私钥
 
-对外提供服务前，实例部署者还应阅读“使用与部署责任”，并主动设置 `INSTANCE_TERMS_ACCEPTED=true`。未设置该变量不会阻止服务启动。
+对外提供服务前，实例部署者还应阅读“使用与部署责任”，并主动设置 `INSTANCE_TERMS_ACCEPTED=true`。未设置该变量不会阻止服务启动，但实例不会接受新增或覆盖订阅。
 
 生成签名私钥：
 
@@ -51,7 +51,7 @@ ALERT_SIGNING_KEY=生成的私钥
 
 不要提交真实的 `.env` 或将 `ALERT_SIGNING_KEY` 输出到日志。修改签名私钥后，之前发送的详情链接会失效。
 
-`INSTANCE_TERMS_ACCEPTED` 默认为 `false`。未确认时服务仍会启动，API、实时数据源和通知能力也不会因此自动关闭，但订阅页面每次加载都会显示实例配置提醒。网页中的“继续查看”只关闭当前弹窗，不会代表部署者确认，也不会修改服务端配置。只有实例运营者阅读并接受下方责任声明后，才应在部署环境中将该变量设为 `true`。
+`INSTANCE_TERMS_ACCEPTED` 默认为 `false`。未确认时服务仍会启动，订阅页面每次加载都会显示实例配置提醒，`POST /api/subscribe` 会返回 `503 Service Unavailable`，网页保存按钮也会保持禁用。该门禁只阻止新增或覆盖订阅：已有订阅和后台任务仍会继续处理，`DELETE /api/unsubscribe` 保持可用，以便用户删除已有订阅。网页中的“继续查看”只关闭当前弹窗，不会代表部署者确认，也不会修改服务端配置。只有实例运营者阅读并接受下方责任声明后，才应在部署环境中将该变量设为 `true` 并重启服务。
 
 服务默认监听 `0.0.0.0:30010`。浏览器访问 `http://服务器地址:30010` 即可打开订阅页面。生产环境建议监听 `127.0.0.1`，再通过反向代理提供 HTTPS。
 
@@ -67,7 +67,7 @@ ALERT_SIGNING_KEY=生成的私钥
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `INSTANCE_TERMS_ACCEPTED` | `false` | 部署者是否已明确接受本 README 的“使用与部署责任”；不属于许可证明或功能安全开关 |
+| `INSTANCE_TERMS_ACCEPTED` | `false` | 部署者是否已明确接受本 README 的“使用与部署责任”；为 `false` 时禁止新增或覆盖订阅 |
 | `SERVER_HOST` | `0.0.0.0` | 监听地址 |
 | `SERVER_PORT` | `30010` | 服务端口 |
 | `ALLOWED_ORIGINS` | 空 | 允许访问 API 的前端 Origin，多个值用逗号分隔 |
@@ -153,6 +153,8 @@ cargo build --release --features migration --bin disaster-alert-migrate
 | `GET` | `/api/reverse-geocode` | 根据坐标查询行政区 |
 | `GET` | `/api/status` | 获取订阅总数、数据源和后台任务状态 |
 | `GET` | `/health` | 健康检查 |
+
+`POST /api/subscribe` 仅在 `INSTANCE_TERMS_ACCEPTED=true` 时可用。未确认时返回 `503`，且不会创建订阅或发送 Bark 确认通知；取消订阅接口不受此门禁影响。
 
 接口统一返回：
 
