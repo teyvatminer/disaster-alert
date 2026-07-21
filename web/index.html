@@ -721,12 +721,14 @@
       border-top: 1px solid var(--line);
     }
     .form-actions button { width: 100%; }
-    .test-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .test-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .test-actions button {
+      width: auto;
       min-width: 0;
-      padding: 0 8px;
+      padding: 0 12px;
       background: var(--soft);
       font-size: 13px;
+      white-space: nowrap;
     }
     .test-passive { color: #344054; }
     .test-active { color: #175cd3; }
