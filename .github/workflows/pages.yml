@@ -48,6 +48,11 @@ jobs:
           from pathlib import Path
 
           api_base = os.environ["DISASTER_API_BASE"].strip().rstrip("/")
+          index_path = Path("public/index.html")
+          index_path.write_text(
+              index_path.read_text(encoding="utf-8").replace("__DISASTER_ALERT_INSTANCE_NOTICE__", ""),
+              encoding="utf-8",
+          )
           Path("public/config.js").write_text(
               f"window.DISASTER_API_BASE = {json.dumps(api_base)};\n",
               encoding="utf-8",

@@ -281,14 +281,14 @@
     }
     .map-mode.is-selecting { color: var(--info); border-color: color-mix(in srgb, var(--primary) 40%, var(--line)); }
     .location-search {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 78px;
+      display: flex;
+      align-items: center;
       gap: 8px;
       margin-bottom: 10px;
+      flex-wrap: nowrap;
     }
-    .location-search input { min-width: 0; }
-    .location-search input { height: 42px; }
-    .location-search button { height: 42px; }
+    .location-search input { flex: 0 1 420px; min-width: 0; height: 42px; }
+    .location-search button { flex: 0 0 78px; height: 42px; }
     .location-search-results {
       display: grid;
       gap: 7px;
@@ -729,7 +729,9 @@
       h1 { font-size: 28px; line-height: 1.12; }
       .badge { height: 32px; min-height: 32px; padding: 0 10px; font-size: 12px; }
       .identity-grid, .grid, .form-actions { grid-template-columns: 1fr; }
-      .location-search { grid-template-columns: minmax(0, 1fr) 64px; gap: 6px; }
+      .location-search { gap: 6px; }
+      .location-search input { flex-basis: auto; }
+      .location-search button { flex-basis: 64px; }
       .location-search input { padding: 0 10px; }
       .location-search button { padding: 0 8px; }
       .admin-grid { grid-template-columns: 1fr; }
@@ -928,10 +930,10 @@
                 <h2>监测地点</h2>
                 <span id="location-count">0 / 3</span>
               </div>
-              <form id="location-search" class="location-search">
+              <div id="location-search" class="location-search" role="search">
                 <input id="location-search-query" type="search" maxlength="160" autocomplete="off" placeholder="搜索小区、学校、区县或城市" aria-label="搜索监测地点" />
-                <button id="location-search-submit" type="submit">搜索</button>
-              </form>
+                <button id="location-search-submit" type="button">搜索</button>
+              </div>
               <div id="location-search-results" class="location-search-results" hidden></div>
               <div class="map-shell">
                 <div id="map"></div>
@@ -1407,7 +1409,7 @@
     }
 
     async function searchLocation(event) {
-      event.preventDefault();
+      event?.preventDefault();
       const query = locationSearchQuery.value.trim();
       if (query.length < 2) return show("搜索地址至少需要 2 个字符", "error");
       if (locationSearchInFlight) return;
@@ -2360,7 +2362,11 @@
       );
     }
 
-    locationSearch.addEventListener("submit", searchLocation);
+    locationSearchSubmit.addEventListener("click", searchLocation);
+    locationSearchQuery.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      searchLocation(event);
+    });
     locationSearchResults.addEventListener("click", (event) => {
       const button = event.target.closest("[data-search-result]");
       if (!button) return;
