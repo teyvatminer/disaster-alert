@@ -2635,7 +2635,7 @@ mod tests {
                 min_magnitude: 3.0 + random.index(6) as f64,
                 level_bands: vec![
                     IntensityBand {
-                        min: 0,
+                        min: 1,
                         max: 2,
                         interruption_level: InterruptionLevel::Passive,
                     },
@@ -2652,7 +2652,7 @@ mod tests {
                 fallback_radius_km: [80.0, 300.0, 1_000.0][random.index(3)],
                 level_bands: vec![
                     IntensityBand {
-                        min: 0,
+                        min: 1,
                         max: 2,
                         interruption_level: InterruptionLevel::Passive,
                     },
@@ -2668,7 +2668,7 @@ mod tests {
                 min_severity: u8::try_from(1 + random.index(4)).unwrap_or(1),
                 level_bands: vec![
                     IntensityBand {
-                        min: 0,
+                        min: 1,
                         max: 2,
                         interruption_level: InterruptionLevel::Passive,
                     },
@@ -2684,7 +2684,7 @@ mod tests {
                 max_center_distance_km: [100.0, 500.0, 1_500.0][random.index(3)],
                 level_bands: vec![
                     IntensityBand {
-                        min: 0,
+                        min: 1,
                         max: 2,
                         interruption_level: InterruptionLevel::Passive,
                     },

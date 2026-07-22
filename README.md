@@ -237,7 +237,7 @@ Content-Type: application/json
 
 `sources` 支持两种形式：
 
-`level_bands` 默认把 `event.level <= 2` 映射为 `passive`，`event.level >= 3` 映射为 `active`，不为这四类灾害设置 `critical`。
+`level_bands` 默认把 `event.level` 1 到 2 映射为 `passive`，`event.level >= 3` 映射为 `active`，不为这四类灾害设置 `critical`。默认规则不会覆盖等级 0，因此等级 0 消息不会推送。
 
 ```json
 { "mode": "all" }

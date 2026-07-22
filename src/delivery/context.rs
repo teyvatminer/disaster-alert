@@ -620,7 +620,7 @@ impl NotificationIntensityBandSnapshot {
 fn default_notification_level_bands() -> Vec<NotificationIntensityBandSnapshot> {
     vec![
         NotificationIntensityBandSnapshot {
-            min: 0,
+            min: 1,
             max: 2,
             interruption_level: InterruptionLevel::Passive,
         },

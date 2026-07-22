@@ -306,7 +306,18 @@ mod tests {
                         interruption_level: InterruptionLevel::Active,
                     }]
                 } else {
-                    Vec::new()
+                    vec![
+                        CompiledIntensityBand {
+                            min: 1,
+                            max: 2,
+                            interruption_level: InterruptionLevel::Passive,
+                        },
+                        CompiledIntensityBand {
+                            min: 3,
+                            max: 4,
+                            interruption_level: InterruptionLevel::Active,
+                        },
+                    ]
                 },
             }],
         }
@@ -343,6 +354,20 @@ mod tests {
             value.latitude = None;
             value.longitude = None;
             assert!(match_compiled(&subscription(category, None), &value).is_none());
+        }
+    }
+
+    #[test]
+    fn default_event_level_bands_ignore_level_zero() {
+        for category in [
+            DisasterCategory::EarthquakeReport,
+            DisasterCategory::WeatherWarning,
+            DisasterCategory::Tsunami,
+            DisasterCategory::Typhoon,
+        ] {
+            let mut value = event(category);
+            value.level = 0;
+            assert!(match_compiled(&subscription(category, Some("上海")), &value).is_none());
         }
     }
 

@@ -1799,7 +1799,7 @@
 
     function defaultEventLevelBands() {
       return [
-        { min: 0, max: 2, level: "passive", label: "低等级" },
+        { min: 1, max: 2, level: "passive", label: "低等级" },
         { min: 3, max: 4, level: "active", label: "高等级" },
       ];
     }
@@ -2674,7 +2674,7 @@
         if (!level) return setNotifyWarning("通知级别规则最多 3 条", category);
         const maxValue = maxBandValue(category);
         const preset = defaultBandsForCategory(category).find((band) => band.level === level)
-          || { min: level === "passive" ? 0 : Math.min(3, maxValue), max: level === "critical" ? maxValue : level === "passive" ? Math.min(2, maxValue) : maxValue, level };
+          || { min: level === "passive" ? 1 : Math.min(3, maxValue), max: level === "critical" ? maxValue : level === "passive" ? Math.min(2, maxValue) : maxValue, level };
         bands.push({ ...preset, label: levelLabel(level) });
         rule[bandField(category)] = bands.map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
         renderDisasterGroups();

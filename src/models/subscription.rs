@@ -457,7 +457,7 @@ fn default_earthquake_warning_bands() -> Vec<IntensityBand> {
 fn default_event_level_bands() -> Vec<IntensityBand> {
     vec![
         IntensityBand {
-            min: 0,
+            min: 1,
             max: 2,
             interruption_level: InterruptionLevel::Passive,
         },
@@ -590,6 +590,16 @@ mod tests {
         }]);
 
         assert!(subscription.validate().is_err());
+    }
+
+    #[test]
+    fn default_event_level_bands_skip_level_zero() {
+        let bands = default_event_level_bands();
+
+        assert_eq!(bands[0].min, 1);
+        assert_eq!(bands[0].max, 2);
+        assert_eq!(bands[0].interruption_level, InterruptionLevel::Passive);
+        assert!(bands.iter().all(|band| band.min > 0));
     }
 
     #[test]
