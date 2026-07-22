@@ -818,12 +818,9 @@ fn validate_snapshot_bands(
     anyhow::ensure!(
         !bands.is_empty()
             && bands.len() <= 3
-            && bands
-                .iter()
-                .all(|band| band.min <= band.max
-                    && band.max <= max_value
-                    && (allow_critical
-                        || band.interruption_level != InterruptionLevel::Critical)),
+            && bands.iter().all(|band| band.min <= band.max
+                && band.max <= max_value
+                && (allow_critical || band.interruption_level != InterruptionLevel::Critical)),
         "{message}"
     );
     Ok(())
