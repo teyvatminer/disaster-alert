@@ -927,7 +927,12 @@ mod tests {
             vec![base_url],
             2,
             2,
-            BarkPushConfig::new(Some("alarm".to_string()), 10, "灾害预警".to_string(), true),
+            BarkPushConfig::new(
+                Some("alarm".to_string()),
+                10,
+                "灾害预警".to_string(),
+                true,
+            ),
         )?;
         let recipient = AlertRecipient::new(&subscription, &subscription.targets[0]);
         notifier
