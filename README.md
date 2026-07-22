@@ -107,10 +107,10 @@ DATA_ENCRYPTION_KEY=另一次生成的私钥
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `BARK_SOUND` | 空 | Bark 铃声名称，空表示使用默认铃声 |
-| `BARK_VOLUME` | `10` | 通知音量，范围 `0..=10` |
+| `BARK_SOUND` | `alarm` | Bark 铃声名称，空或未设置时使用 `alarm` |
+| `BARK_VOLUME` | `10` | Critical 通知音量，范围 `0..=10` |
 | `BARK_GROUP` | `灾害预警` | Bark 通知分组名 |
-| `BARK_CALL` | `true` | 是否为非静默灾害通知启用 Bark 通话级提醒 |
+| `BARK_CALL` | `true` | 兼容旧配置项；当前 Critical 固定启用 `call=1`，Active 不启用 `call` |
 | `ALERT_DETAIL_BASE_URL` | 必填 | 通知详情页的公网根地址 |
 | `ALERT_SIGNING_KEY` | 必填 | 32 字节、无填充的 URL-safe Base64 私钥 |
 
@@ -230,12 +230,14 @@ Content-Type: application/json
 | 灾种 | `category` | 主要条件 |
 | --- | --- | --- |
 | 地震预警 | `earthquake_warning` | `estimated_intensity_bands`，预计烈度范围 `0..=7` |
-| 地震速报 | `earthquake_report` | `min_magnitude`，最低震级 `0..=10` |
-| 气象预警 | `weather_warning` | `min_severity` 和 `fallback_radius_km` |
-| 海啸预警 | `tsunami` | `min_severity`，范围 `1..=4` |
-| 台风信息 | `typhoon` | `max_center_distance_km`，范围 `1..=3000` km |
+| 地震速报 | `earthquake_report` | `min_magnitude`，最低震级 `0..=10`；`level_bands`，事件等级范围 `0..=4` |
+| 气象预警 | `weather_warning` | `min_severity` 和 `fallback_radius_km`；`level_bands`，事件等级范围 `0..=4` |
+| 海啸预警 | `tsunami` | `min_severity`，范围 `1..=4`；`level_bands`，事件等级范围 `0..=4` |
+| 台风信息 | `typhoon` | `max_center_distance_km`，范围 `1..=3000` km；`level_bands`，事件等级范围 `0..=4` |
 
 `sources` 支持两种形式：
+
+`level_bands` 默认把 `event.level <= 2` 映射为 `passive`，`event.level >= 3` 映射为 `active`，不为这四类灾害设置 `critical`。
 
 ```json
 { "mode": "all" }

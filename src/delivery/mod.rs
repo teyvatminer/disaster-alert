@@ -8,11 +8,11 @@ pub(crate) use context::NotificationLinkService;
 pub(crate) use context::{NotificationContextInput, NotificationVerifyError};
 #[cfg(test)]
 pub(crate) use context::{
-    NotificationEventSnapshot, NotificationIntensityBandSnapshot, NotificationTargetSnapshot,
-    NotificationTimingSnapshot,
+    NotificationEventSnapshot, NotificationTargetSnapshot, NotificationTimingSnapshot,
 };
 pub(crate) use context::{
-    NotificationRuleSnapshot, NotificationSnapshot, NotificationSourcesSnapshot,
+    NotificationIntensityBandSnapshot, NotificationRuleSnapshot, NotificationSnapshot,
+    NotificationSourcesSnapshot,
 };
 pub(crate) use message::{AlertTiming, remaining_seconds};
 

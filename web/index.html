@@ -971,7 +971,7 @@
         <h2 class="workspace-heading">接收设备 <span>Bark</span></h2>
         <div class="identity-grid" id="identity-grid">
           <div class="field">
-            <label for="bark-id">Bark Key<span id="draft-status" class="draft-status">（配置草稿和 Bark Key 会保存在当前浏览器）</span></label>
+            <label for="bark-id">Bark Key<span id="draft-status" class="draft-status">（订阅后Bark Key会保存在当前浏览器）</span></label>
             <input id="bark-id" type="text" autocomplete="off" maxlength="64" required placeholder="例如 JP8S9..." />
           </div>
           <div class="field" id="bark-url-field">
@@ -1107,8 +1107,6 @@
     const finishLocation = document.querySelector("#finish-location");
     const discardLocationEdit = document.querySelector("#discard-location-edit");
     const draftStatus = document.querySelector("#draft-status");
-    let notifyBandsEl = null;
-    let notifyWarning = null;
     const toastStack = document.querySelector("#toast-stack");
     const retryConfig = document.querySelector("#retry-config");
     const submit = document.querySelector("#submit");
@@ -1308,10 +1306,11 @@
       });
     });
 
-    function setNotifyWarning(message = "") {
-      if (!notifyWarning) return;
-      notifyWarning.textContent = message;
-      notifyWarning.classList.toggle("show", Boolean(message));
+    function setNotifyWarning(message = "", category = "earthquake_warning") {
+      const warning = document.querySelector(`[data-notify-warning="${category}"]`);
+      if (!warning) return;
+      warning.textContent = message;
+      warning.classList.toggle("show", Boolean(message));
     }
 
     function createEmptyDraft() {
@@ -1797,6 +1796,43 @@
       ];
     }
 
+    function defaultEventLevelBands() {
+      return [
+        { min: 0, max: 2, level: "passive", label: "低等级" },
+        { min: 3, max: 4, level: "active", label: "高等级" },
+      ];
+    }
+
+    function usesLevelBands(category) {
+      return ["earthquake_report", "weather_warning", "tsunami", "typhoon"].includes(category);
+    }
+
+    function bandField(category) {
+      return category === "earthquake_warning" ? "estimated_intensity_bands" : "level_bands";
+    }
+
+    function defaultBandsForCategory(category) {
+      return category === "earthquake_warning" ? defaultNotifyBands() : defaultEventLevelBands();
+    }
+
+    function maxBandValue(category) {
+      return category === "earthquake_warning" ? 7 : 4;
+    }
+
+    function bandTitle(category) {
+      return category === "earthquake_warning" ? "预估烈度范围" : "预估等级范围";
+    }
+
+    function bandDescription(category) {
+      return category === "earthquake_warning"
+        ? "按预估烈度决定通知级别，未包含在规则中的烈度不会推送。"
+        : "按事件等级决定通知级别，未包含在规则中的等级不会推送。";
+    }
+
+    function notifyLevelsForCategory(category) {
+      return usesLevelBands(category) ? ["passive", "active"] : notifyLevelOrder;
+    }
+
     function cloneJson(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -1829,11 +1865,19 @@
       }
       if (result.category === "tsunami") result.min_severity = Number(result.min_severity);
       if (result.category === "typhoon") result.max_center_distance_km = Number(result.max_center_distance_km);
+      const field = bandField(result.category);
+      if (Array.isArray(result[field])) {
+        result[field] = result[field].map((band) => ({
+          min: Number(band.min),
+          max: Number(band.max),
+          interruption_level: String(band.interruption_level ?? band.level ?? "passive").toLowerCase(),
+        }));
+      }
       return result;
     }
 
-    function intensityBands() {
-      return alertRule("earthquake_warning")?.estimated_intensity_bands || [];
+    function notificationBands(category) {
+      return alertRule(category)?.[bandField(category)] || [];
     }
 
     function sourceEnabled(category, source) {
@@ -1876,13 +1920,21 @@
           .map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
       } else if (category.id === "earthquake_report") {
         fallback.min_magnitude = numberInRange(candidate.min_magnitude, fallback.min_magnitude, 0, 10);
+        fallback.level_bands = normalizeBands(candidate.level_bands, category.id)
+          .map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
       } else if (category.id === "weather_warning") {
         fallback.min_severity = numberInRange(candidate.min_severity, fallback.min_severity, 1, 4, true);
         fallback.fallback_radius_km = numberInRange(candidate.fallback_radius_km, fallback.fallback_radius_km, 1, 2000);
+        fallback.level_bands = normalizeBands(candidate.level_bands, category.id)
+          .map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
       } else if (category.id === "tsunami") {
         fallback.min_severity = numberInRange(candidate.min_severity, fallback.min_severity, 1, 4, true);
+        fallback.level_bands = normalizeBands(candidate.level_bands, category.id)
+          .map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
       } else if (category.id === "typhoon") {
         fallback.max_center_distance_km = numberInRange(candidate.max_center_distance_km, fallback.max_center_distance_km, 1, 3000);
+        fallback.level_bands = normalizeBands(candidate.level_bands, category.id)
+          .map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
       }
       return fallback;
     }
@@ -1929,11 +1981,12 @@
     function categoryRuleSummary(category) {
       const alert = alertRule(category);
       if (!alert || !alertEntry(category)?.enabled) return "";
-      if (category === "earthquake_warning") return `${intensityBands().length} 段烈度规则`;
-      if (category === "earthquake_report") return `M ≥ ${Number(alert.min_magnitude).toFixed(1)}`;
-      if (category === "weather_warning") return `≥ ${severityLabel(alert.min_severity)} · 回退 ${Number(alert.fallback_radius_km)} km`;
-      if (category === "tsunami") return `≥ ${severityLabel(alert.min_severity)}`;
-      if (category === "typhoon") return `中心 ${Number(alert.max_center_distance_km)} km 内`;
+      const bandCount = notificationBands(category).length;
+      if (category === "earthquake_warning") return `${bandCount} 段烈度规则`;
+      if (category === "earthquake_report") return `M ≥ ${Number(alert.min_magnitude).toFixed(1)} · ${bandCount} 段等级规则`;
+      if (category === "weather_warning") return `≥ ${severityLabel(alert.min_severity)} · 回退 ${Number(alert.fallback_radius_km)} km · ${bandCount} 段等级规则`;
+      if (category === "tsunami") return `≥ ${severityLabel(alert.min_severity)} · ${bandCount} 段等级规则`;
+      if (category === "typhoon") return `中心 ${Number(alert.max_center_distance_km)} km 内 · ${bandCount} 段等级规则`;
       return "";
     }
 
@@ -1941,20 +1994,20 @@
       return ({ 1: "蓝色/信息", 2: "黄色", 3: "橙色", 4: "红色" })[Number(value)] || `级别 ${value}`;
     }
 
-    function intensityRuleEditor(disabled) {
+    function notificationRuleEditor(category, disabled) {
       const state = disabled ? "disabled" : "";
       return `
         <div class="rule-section">
           <div class="rule-section-header">
             <span class="rule-section-title">通知规则</span>
             <span class="intensity-actions">
-              <button type="button" data-intensity-action="add" ${state}>添加规则</button>
-              <button type="button" data-intensity-action="reset" ${state}>恢复默认</button>
+              <button type="button" data-intensity-action="add" data-band-category="${escapeHtml(category)}" ${state}>添加规则</button>
+              <button type="button" data-intensity-action="reset" data-band-category="${escapeHtml(category)}" ${state}>恢复默认</button>
             </span>
           </div>
-          <small>按预估烈度决定通知级别，未包含在规则中的烈度不会推送。</small>
-          <div id="notify-bands" class="intensity-rules"></div>
-          <div id="notify-warning" class="notify-warning"></div>
+          <small>${escapeHtml(bandDescription(category))}</small>
+          <div class="intensity-rules" data-notify-bands="${escapeHtml(category)}"></div>
+          <div class="notify-warning" data-notify-warning="${escapeHtml(category)}"></div>
         </div>`;
     }
 
@@ -1997,13 +2050,14 @@
                   <div class="source-list">${group.sources.map((source) => `<label class="source-row"><input class="source-toggle" data-source="${escapeHtml(source.id)}" type="checkbox" ${sourceEnabled(category.id, source.id) ? "checked" : ""} ${disabled ? "disabled" : ""}><span>${escapeHtml(source.label)}</span></label>`).join("")}</div>
                 </div>`).join("")}
             </div>
-            ${category.id === "earthquake_warning" ? intensityRuleEditor(disabled) : filters ? `<div class="rule-section"><div class="rule-section-header"><span class="rule-section-title">匹配规则</span></div><div class="rule-grid">${filters}</div></div>` : ""}
+            ${filters ? `<div class="rule-section"><div class="rule-section-header"><span class="rule-section-title">匹配规则</span></div><div class="rule-grid">${filters}</div></div>` : ""}
+            ${category.id === "earthquake_warning" || usesLevelBands(category.id) ? notificationRuleEditor(category.id, disabled) : ""}
           </div>
         </section>`;
       }).join("");
-      notifyBandsEl = document.querySelector("#notify-bands");
-      notifyWarning = document.querySelector("#notify-warning");
-      if (notifyBandsEl) renderNotifyBands();
+      for (const category of optionCategories) {
+        if (category.id === "earthquake_warning" || usesLevelBands(category.id)) renderNotifyBands(category.id);
+      }
     }
 
     async function loadSubscriptionOptions(draft, generation) {
@@ -2056,6 +2110,15 @@
       for (const category of optionCategories) {
         const entry = alertEntry(category.id);
         if (entry?.enabled && entry.rule.sources?.mode === "include" && !entry.rule.sources.ids.length) return `${category.label}请至少启用一个来源`;
+        if (entry?.enabled && (category.id === "earthquake_warning" || usesLevelBands(category.id))) {
+          const error = validateBands(notificationBands(category.id).map((band) => ({
+            min: Number(band.min),
+            max: Number(band.max),
+            level: String(band.interruption_level ?? band.level ?? "").toLowerCase(),
+            label: levelLabel(String(band.interruption_level ?? band.level ?? "passive").toLowerCase()),
+          })), category.id);
+          if (error) return `${category.label}${error}`;
+        }
       }
       return "";
     }
@@ -2074,20 +2137,22 @@
       });
     }
 
-    function normalizeBands(bands) {
+    function normalizeBands(bands, category = "earthquake_warning") {
       const result = [];
       const usedLevels = new Set();
+      const maxValue = maxBandValue(category);
       for (const band of bands || []) {
         const levelValue = band.interruption_level ?? band.level;
-        const level = notifyLevelOrder.includes(String(levelValue || "").toLowerCase()) ? String(levelValue).toLowerCase() : "passive";
+        const allowedLevels = notifyLevelsForCategory(category);
+        const level = allowedLevels.includes(String(levelValue || "").toLowerCase()) ? String(levelValue).toLowerCase() : "passive";
         if (usedLevels.has(level)) continue;
         usedLevels.add(level);
-        let min = clampInt(band.min, 0, 7, 0);
-        let max = clampInt(band.max, 0, 7, level === "critical" ? 7 : min);
+        let min = clampInt(band.min, 0, maxValue, 0);
+        let max = clampInt(band.max, 0, maxValue, level === "critical" ? maxValue : min);
         result.push({ min, max, level, label: String(band.label || levelLabel(level)).trim() });
         if (result.length >= 3) break;
       }
-      return result.length ? result.sort((a, b) => a.min - b.min) : defaultNotifyBands();
+      return result.length ? result.sort((a, b) => a.min - b.min) : defaultBandsForCategory(category);
     }
 
     function clampInt(value, min, max, fallback) {
@@ -2114,51 +2179,54 @@
       return "";
     }
 
-    function validateBands(bands) {
+    function validateBands(bands, category = "earthquake_warning") {
       if (!bands.length) return "请至少保留一条通知级别规则";
       const levels = new Set();
       const used = new Set();
+      const maxValue = maxBandValue(category);
       for (const band of bands) {
-        if (!notifyLevelOrder.includes(band.level)) return "通知级别无效";
+        if (!notifyLevelsForCategory(category).includes(band.level)) return "通知级别无效";
         if (levels.has(band.level)) return "每个通知级别只能添加一条规则";
         levels.add(band.level);
-        if (!Number.isInteger(band.min) || !Number.isInteger(band.max) || band.min > band.max || band.min < 0 || band.max > 7) return "烈度范围无效";
-        if (band.level === "critical" && band.max !== 7) return "Critical 规则上限必须覆盖烈度 7";
+        if (!Number.isInteger(band.min) || !Number.isInteger(band.max) || band.min > band.max || band.min < 0 || band.max > maxValue) return category === "earthquake_warning" ? "烈度范围无效" : "等级范围无效";
+        if (band.level === "critical" && band.max !== maxValue) return `Critical 规则上限必须覆盖${category === "earthquake_warning" ? "烈度" : "等级"} ${maxValue}`;
         if (String(band.label || "").trim().length > 32) return "通知级别标签最多 32 个字符";
         for (let value = band.min; value <= band.max; value++) {
-          if (used.has(value)) return "烈度范围不能重叠";
+          if (used.has(value)) return category === "earthquake_warning" ? "烈度范围不能重叠" : "等级范围不能重叠";
           used.add(value);
         }
       }
       return "";
     }
 
-    function renderNotifyBands() {
-      if (!notifyBandsEl) return;
-      const bands = intensityBands().map((band) => ({
+    function renderNotifyBands(category = "earthquake_warning") {
+      const bandsEl = document.querySelector(`[data-notify-bands="${category}"]`);
+      if (!bandsEl) return;
+      const bands = notificationBands(category).map((band) => ({
         min: band.min ?? "",
         max: band.max ?? "",
         level: String(band.interruption_level ?? band.level ?? "passive").toLowerCase(),
       }));
-      const state = alertEntry("earthquake_warning")?.enabled ? "" : "disabled";
-      notifyBandsEl.innerHTML = bands.map((band, index) => `
-        <div class="intensity-rule" data-index="${escapeHtml(index)}">
+      const state = alertEntry(category)?.enabled ? "" : "disabled";
+      const maxValue = maxBandValue(category);
+      bandsEl.innerHTML = bands.map((band, index) => `
+        <div class="intensity-rule" data-category="${escapeHtml(category)}" data-index="${escapeHtml(index)}">
           <div class="intensity-rule-header">
             <span class="intensity-rule-name">规则 ${escapeHtml(index + 1)}</span>
           </div>
           <div class="intensity-rule-fields">
             <label class="rule-field">
-              <span class="rule-field-title">预估烈度范围</span>
+              <span class="rule-field-title">${escapeHtml(bandTitle(category))}</span>
               <span class="intensity-range">
-                <input class="band-min" type="number" min="0" max="7" step="1" value="${escapeHtml(band.min)}" aria-label="起始烈度" ${state}>
+                <input class="band-min" type="number" min="0" max="${escapeHtml(maxValue)}" step="1" value="${escapeHtml(band.min)}" aria-label="起始${category === "earthquake_warning" ? "烈度" : "等级"}" ${state}>
                 <span>至</span>
-                <input class="band-max" type="number" min="0" max="7" step="1" value="${escapeHtml(band.max)}" aria-label="最高烈度" ${state}>
+                <input class="band-max" type="number" min="0" max="${escapeHtml(maxValue)}" step="1" value="${escapeHtml(band.max)}" aria-label="最高${category === "earthquake_warning" ? "烈度" : "等级"}" ${state}>
               </span>
             </label>
             <label class="rule-field">
               <span class="rule-field-title">通知级别</span>
               <select class="band-select level-${escapeHtml(band.level)}" ${state}>
-                ${notifyLevelOrder.map((level) => `<option value="${escapeHtml(level)}" ${level === band.level ? "selected" : ""}>${escapeHtml(levelLabel(level))}</option>`).join("")}
+                ${notifyLevelsForCategory(category).map((level) => `<option value="${escapeHtml(level)}" ${level === band.level ? "selected" : ""}>${escapeHtml(levelLabel(level))}</option>`).join("")}
               </select>
             </label>
           </div>
@@ -2167,8 +2235,8 @@
       `).join("");
     }
 
-    function collectBands() {
-      return intensityBands().map((band) => {
+    function collectBands(category = "earthquake_warning") {
+      return notificationBands(category).map((band) => {
         const level = String(band.interruption_level ?? band.level ?? "").toLowerCase();
         const minRaw = String(band.min ?? "").trim();
         const maxRaw = String(band.max ?? "").trim();
@@ -2180,27 +2248,28 @@
 
     function updateBandDraft(control) {
       const row = control.closest(".intensity-rule");
-      const band = intensityBands()[Number(row?.dataset.index)];
+      const category = row?.dataset.category || "earthquake_warning";
+      const band = notificationBands(category)[Number(row?.dataset.index)];
       if (!band) return;
       if (control.classList.contains("band-min")) band.min = control.value;
       if (control.classList.contains("band-max")) band.max = control.value;
       if (control.classList.contains("band-select")) band.interruption_level = control.value;
-      setNotifyWarning(validateBands(collectBands()));
+      setNotifyWarning(validateBands(collectBands(category), category), category);
       persistDraft();
     }
 
-    function commitBands(showWarning = false) {
-      const bands = collectBands();
-      const error = validateBands(bands);
-      setNotifyWarning(error || "");
+    function commitBands(category = "earthquake_warning", showWarning = false) {
+      const bands = collectBands(category);
+      const error = validateBands(bands, category);
+      setNotifyWarning(error || "", category);
       if (error) return false;
-      const rule = alertRule("earthquake_warning");
+      const rule = alertRule(category);
       if (rule) {
-        rule.estimated_intensity_bands = bands.sort((left, right) => left.min - right.min).map((band) => ({
+        rule[bandField(category)] = bands.sort((left, right) => left.min - right.min).map((band) => ({
           min: band.min, max: band.max, interruption_level: band.level,
         }));
       }
-      renderNotifyBands();
+      renderNotifyBands(category);
       if (showWarning && !error) persistDraft();
       return true;
     }
@@ -2233,7 +2302,7 @@
 
     function updateDraftStatus() {
       if (!lastSubmittedSignature) {
-        draftStatus.textContent = "（配置草稿和 Bark Key 会保存在当前浏览器）";
+        draftStatus.textContent = "（订阅后Bark Key会保存在当前浏览器）";
       } else if (draftSignature() === lastSubmittedSignature && currentDestinationIdentity() === lastSubmittedIdentity) {
         draftStatus.textContent = "本浏览器中的配置已提交。";
       } else {
@@ -2585,24 +2654,28 @@
 
       const intensityAction = event.target.closest("[data-intensity-action]");
       if (intensityAction) {
-        if (!commitBands()) return;
-        const rule = alertRule("earthquake_warning");
+        const category = intensityAction.dataset.bandCategory || "earthquake_warning";
+        if (!commitBands(category)) return;
+        const rule = alertRule(category);
         if (!rule) return;
         if (intensityAction.dataset.intensityAction === "reset") {
-          rule.estimated_intensity_bands = defaultNotifyBands().map((band) => ({
+          rule[bandField(category)] = defaultBandsForCategory(category).map((band) => ({
             min: band.min, max: band.max, interruption_level: band.level,
           }));
-          setNotifyWarning("");
+          setNotifyWarning("", category);
           renderDisasterGroups();
           persistDraft();
           return;
         }
-        const bands = normalizeBands(rule.estimated_intensity_bands);
+        const bands = normalizeBands(rule[bandField(category)], category);
         const used = new Set(bands.map((band) => band.level));
-        const level = notifyLevelOrder.find((item) => !used.has(item));
-        if (!level) return setNotifyWarning("通知级别规则最多 3 条");
-        bands.push({ min: level === "passive" ? 0 : level === "active" ? 2 : 3, max: level === "critical" ? 7 : level === "active" ? 2 : 1, level, label: levelLabel(level) });
-        rule.estimated_intensity_bands = bands.map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
+        const level = notifyLevelsForCategory(category).find((item) => !used.has(item));
+        if (!level) return setNotifyWarning("通知级别规则最多 3 条", category);
+        const maxValue = maxBandValue(category);
+        const preset = defaultBandsForCategory(category).find((band) => band.level === level)
+          || { min: level === "passive" ? 0 : Math.min(3, maxValue), max: level === "critical" ? maxValue : level === "passive" ? Math.min(2, maxValue) : maxValue, level };
+        bands.push({ ...preset, label: levelLabel(level) });
+        rule[bandField(category)] = bands.map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
         renderDisasterGroups();
         persistDraft();
         return;
@@ -2610,10 +2683,12 @@
 
       const removeRule = event.target.closest("[data-action='remove-rule']");
       if (removeRule) {
-        const bands = collectBands().filter((band) => Number.isInteger(band.min) && Number.isInteger(band.max));
-        bands.splice(Number(removeRule.closest(".intensity-rule").dataset.index), 1);
-        const nextBands = bands.length ? bands : defaultNotifyBands();
-        alertRule("earthquake_warning").estimated_intensity_bands = nextBands.map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
+        const row = removeRule.closest(".intensity-rule");
+        const category = row?.dataset.category || "earthquake_warning";
+        const bands = collectBands(category).filter((band) => Number.isInteger(band.min) && Number.isInteger(band.max));
+        bands.splice(Number(row?.dataset.index), 1);
+        const nextBands = bands.length ? bands : defaultBandsForCategory(category);
+        alertRule(category)[bandField(category)] = nextBands.map((band) => ({ min: band.min, max: band.max, interruption_level: band.level }));
         renderDisasterGroups();
         persistDraft();
         return;
@@ -2634,7 +2709,7 @@
       persistDraft();
     });
     disasterGroupsEl.addEventListener("change", (event) => {
-      if (event.target.closest("#notify-bands")) {
+      if (event.target.closest("[data-notify-bands]")) {
         updateBandDraft(event.target);
         return;
       }
@@ -2642,12 +2717,12 @@
       const source = event.target.dataset.source;
       const rule = event.target.dataset.rule;
       if (category) {
-        if (category === "earthquake_warning" && event.target.checked && !commitBands()) {
+        if (event.target.checked && (category === "earthquake_warning" || usesLevelBands(category)) && !commitBands(category)) {
           event.target.checked = true;
           return;
         }
         alertEntry(category).enabled = event.target.checked;
-        setNotifyWarning("");
+        setNotifyWarning("", category);
         renderDisasterGroups();
       }
       if (source) {
@@ -2668,16 +2743,21 @@
       persistDraft();
     });
     disasterGroupsEl.addEventListener("input", (event) => {
-      if (event.target.closest("#notify-bands .band-min, #notify-bands .band-max")) updateBandDraft(event.target);
+      if (event.target.closest("[data-notify-bands] .band-min, [data-notify-bands] .band-max")) updateBandDraft(event.target);
     });
     disasterGroupsEl.addEventListener("blur", (event) => {
-      if (event.target.closest("#notify-bands .band-min, #notify-bands .band-max")) setNotifyWarning(validateBands(collectBands()));
+      if (event.target.closest("[data-notify-bands] .band-min, [data-notify-bands] .band-max")) {
+        const category = event.target.closest(".intensity-rule")?.dataset.category || "earthquake_warning";
+        setNotifyWarning(validateBands(collectBands(category), category), category);
+      }
     }, true);
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!configurationReady) return show("订阅配置尚未加载完成", "error");
-      if (alertEntry("earthquake_warning")?.enabled && !commitBands()) return show("请修正通知级别规则", "error");
+      for (const category of optionCategories.map((item) => item.id).filter((id) => id === "earthquake_warning" || usesLevelBands(id))) {
+        if (alertEntry(category)?.enabled && !commitBands(category)) return show("请修正通知级别规则", "error");
+      }
       const alertRuleError = validateAlertRules();
       if (alertRuleError) return show(alertRuleError, "error");
       if (!subscriptionDraft.targets.length) return show("请至少添加一个监测地点", "error");

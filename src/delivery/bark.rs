@@ -293,7 +293,7 @@ impl BarkNotifier {
             subtitle,
             body,
             detail_url: None,
-            use_alert_sound: level == "critical",
+            use_alert_sound: matches!(level, "active" | "critical"),
         })
         .await
     }
@@ -466,8 +466,8 @@ fn bark_payload(
         payload["url"] = serde_json::json!(detail_url);
     }
     if level != "passive" && message.use_alert_sound {
-        payload["volume"] = serde_json::json!(push_config.volume);
-        if push_config.call {
+        if level == "critical" {
+            payload["volume"] = serde_json::json!(push_config.volume);
             payload["call"] = serde_json::json!("1");
         }
         if let Some(sound) = &push_config.sound {
@@ -551,6 +551,7 @@ impl BarkPushConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        let _legacy_call_setting = self.call;
         anyhow::ensure!(self.volume <= 10, "BARK_VOLUME must be in 0..=10");
         Ok(())
     }
@@ -803,7 +804,35 @@ mod tests {
     }
 
     #[test]
-    fn disaster_alerts_keep_the_configured_alert_sound() {
+    fn active_alerts_sound_alarm_without_calling() {
+        let message = BarkMessage {
+            bark_url: "https://api.day.app",
+            device_key: "abc123",
+            level: "active",
+            title: "地震速报",
+            subtitle: "接收测试",
+            body: "测试内容",
+            detail_url: Some("https://alert.example.com/incidents/test"),
+            use_alert_sound: true,
+        };
+        let config = BarkPushConfig {
+            sound: Some("alarm".to_string()),
+            volume: 10,
+            group: "灾害预警".to_string(),
+            call: true,
+        };
+
+        let payload = bark_payload(&message, &config, normalize_bark_level(message.level));
+
+        assert_eq!(payload["level"], "active");
+        assert_eq!(payload["sound"], "alarm");
+        assert!(payload.get("volume").is_none());
+        assert!(payload.get("call").is_none());
+        assert_eq!(payload["url"], "https://alert.example.com/incidents/test");
+    }
+
+    #[test]
+    fn critical_alerts_sound_alarm_and_call() {
         let message = BarkMessage {
             bark_url: "https://api.day.app",
             device_key: "abc123",

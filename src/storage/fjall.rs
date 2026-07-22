@@ -2633,19 +2633,67 @@ mod tests {
             DisasterCategory::EarthquakeReport => AlertRule::EarthquakeReport {
                 sources,
                 min_magnitude: 3.0 + random.index(6) as f64,
+                level_bands: vec![
+                    IntensityBand {
+                        min: 0,
+                        max: 2,
+                        interruption_level: InterruptionLevel::Passive,
+                    },
+                    IntensityBand {
+                        min: 3,
+                        max: 4,
+                        interruption_level: InterruptionLevel::Active,
+                    },
+                ],
             },
             DisasterCategory::WeatherWarning => AlertRule::WeatherWarning {
                 sources,
                 min_severity: u8::try_from(1 + random.index(4)).unwrap_or(1),
                 fallback_radius_km: [80.0, 300.0, 1_000.0][random.index(3)],
+                level_bands: vec![
+                    IntensityBand {
+                        min: 0,
+                        max: 2,
+                        interruption_level: InterruptionLevel::Passive,
+                    },
+                    IntensityBand {
+                        min: 3,
+                        max: 4,
+                        interruption_level: InterruptionLevel::Active,
+                    },
+                ],
             },
             DisasterCategory::Tsunami => AlertRule::Tsunami {
                 sources,
                 min_severity: u8::try_from(1 + random.index(4)).unwrap_or(1),
+                level_bands: vec![
+                    IntensityBand {
+                        min: 0,
+                        max: 2,
+                        interruption_level: InterruptionLevel::Passive,
+                    },
+                    IntensityBand {
+                        min: 3,
+                        max: 4,
+                        interruption_level: InterruptionLevel::Active,
+                    },
+                ],
             },
             DisasterCategory::Typhoon => AlertRule::Typhoon {
                 sources,
                 max_center_distance_km: [100.0, 500.0, 1_500.0][random.index(3)],
+                level_bands: vec![
+                    IntensityBand {
+                        min: 0,
+                        max: 2,
+                        interruption_level: InterruptionLevel::Passive,
+                    },
+                    IntensityBand {
+                        min: 3,
+                        max: 4,
+                        interruption_level: InterruptionLevel::Active,
+                    },
+                ],
             },
         };
         let targets = (0..1 + random.index(3))

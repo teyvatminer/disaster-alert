@@ -88,10 +88,18 @@ pub(crate) fn match_subscription(
                 };
                 band.interruption_level
             }
-            AlertRule::EarthquakeReport { .. }
-            | AlertRule::WeatherWarning { .. }
-            | AlertRule::Tsunami { .. }
-            | AlertRule::Typhoon { .. } => bark_level(event.level),
+            AlertRule::EarthquakeReport { level_bands, .. }
+            | AlertRule::WeatherWarning { level_bands, .. }
+            | AlertRule::Tsunami { level_bands, .. }
+            | AlertRule::Typhoon { level_bands, .. } => {
+                let Some(band) = level_bands
+                    .iter()
+                    .find(|band| event.level >= band.min && event.level <= band.max)
+                else {
+                    continue;
+                };
+                band.interruption_level
+            }
         };
         if best.is_none_or(|(_, current, _, _)| distance_km < current) {
             best = Some((ordinal, distance_km, match_kind, interruption_level));
@@ -207,16 +215,6 @@ fn spherical_distance_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
         + left.cos() * right.cos() * (longitude_delta / 2.0).sin().powi(2))
     .clamp(0.0, 1.0);
     6_371.008_8 * 2.0 * a.sqrt().atan2((1.0 - a).sqrt())
-}
-
-fn bark_level(level: u8) -> InterruptionLevel {
-    if level >= 3 {
-        InterruptionLevel::Critical
-    } else if level >= 2 {
-        InterruptionLevel::Active
-    } else {
-        InterruptionLevel::Passive
-    }
 }
 
 #[cfg(test)]

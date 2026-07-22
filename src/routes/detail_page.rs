@@ -1,5 +1,6 @@
 use crate::delivery::{
-    NotificationRuleSnapshot, NotificationSnapshot, NotificationSourcesSnapshot,
+    NotificationIntensityBandSnapshot, NotificationRuleSnapshot, NotificationSnapshot,
+    NotificationSourcesSnapshot,
 };
 use crate::models::{DisasterEvent, IncidentRecord, IncidentReportSummary};
 use axum::{
@@ -555,49 +556,44 @@ fn render_matched_rule(rule: &NotificationRuleSnapshot, html: &mut String) {
         } => {
             row("灾害类别", "地震预警", html);
             row("来源范围", &format_sources(sources), html);
-            let bands = intensity_bands
-                .iter()
-                .map(|band| {
-                    format!(
-                        "{}-{}: {}",
-                        band.min,
-                        band.max,
-                        interruption_level_label(band.interruption_level.as_str())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("；");
-            row("烈度规则", &bands, html);
+            row("烈度规则", &format_bands(intensity_bands), html);
         }
         NotificationRuleSnapshot::EarthquakeReport {
             sources,
             min_magnitude,
+            level_bands,
         } => {
             row("灾害类别", "地震速报", html);
             row("来源范围", &format_sources(sources), html);
             row("最低震级", &format!("M{min_magnitude:.1}"), html);
+            row("等级规则", &format_bands(level_bands), html);
         }
         NotificationRuleSnapshot::WeatherWarning {
             sources,
             min_severity,
             fallback_radius_km,
+            level_bands,
         } => {
             row("灾害类别", "气象预警", html);
             row("来源范围", &format_sources(sources), html);
             row("最低严重度", &min_severity.to_string(), html);
             row("坐标回退半径", &format!("{fallback_radius_km:.1} km"), html);
+            row("等级规则", &format_bands(level_bands), html);
         }
         NotificationRuleSnapshot::Tsunami {
             sources,
             min_severity,
+            level_bands,
         } => {
             row("灾害类别", "海啸预警", html);
             row("来源范围", &format_sources(sources), html);
             row("最低严重度", &min_severity.to_string(), html);
+            row("等级规则", &format_bands(level_bands), html);
         }
         NotificationRuleSnapshot::Typhoon {
             sources,
             max_center_distance_km,
+            level_bands,
         } => {
             row("灾害类别", "台风信息", html);
             row("来源范围", &format_sources(sources), html);
@@ -606,8 +602,24 @@ fn render_matched_rule(rule: &NotificationRuleSnapshot, html: &mut String) {
                 &format!("{max_center_distance_km:.1} km"),
                 html,
             );
+            row("等级规则", &format_bands(level_bands), html);
         }
     }
+}
+
+fn format_bands(bands: &[NotificationIntensityBandSnapshot]) -> String {
+    bands
+        .iter()
+        .map(|band| {
+            format!(
+                "{}-{}: {}",
+                band.min,
+                band.max,
+                interruption_level_label(band.interruption_level.as_str())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；")
 }
 
 fn format_sources(sources: &NotificationSourcesSnapshot) -> String {

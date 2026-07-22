@@ -74,10 +74,13 @@ impl Config {
             allowed_origins: env_list("ALLOWED_ORIGINS"),
             db_path: configured_db_path()?,
             data_encryption_key: required_env_key("DATA_ENCRYPTION_KEY")?,
-            bark_sound: env::var("BARK_SOUND")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            bark_sound: Some(
+                env::var("BARK_SOUND")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "alarm".to_string()),
+            ),
             bark_volume: env_parse("BARK_VOLUME", 10)?,
             bark_group: env_string("BARK_GROUP", "灾害预警"),
             bark_call: env_bool("BARK_CALL", true)?,

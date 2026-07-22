@@ -290,19 +290,75 @@ fn compile_rule(rule: &AlertRule) -> Result<CompiledRule> {
                 })
                 .collect(),
         ),
-        AlertRule::EarthquakeReport { min_magnitude, .. } => {
-            (*min_magnitude, 0, 20_000.0, Vec::new())
-        }
+        AlertRule::EarthquakeReport {
+            min_magnitude,
+            level_bands,
+            ..
+        } => (
+            *min_magnitude,
+            0,
+            20_000.0,
+            level_bands
+                .iter()
+                .map(|band| CompiledIntensityBand {
+                    min: band.min,
+                    max: band.max,
+                    interruption_level: band.interruption_level,
+                })
+                .collect(),
+        ),
         AlertRule::WeatherWarning {
             min_severity,
             fallback_radius_km,
+            level_bands,
             ..
-        } => (0.0, *min_severity, *fallback_radius_km, Vec::new()),
-        AlertRule::Tsunami { min_severity, .. } => (0.0, *min_severity, 20_000.0, Vec::new()),
+        } => (
+            0.0,
+            *min_severity,
+            *fallback_radius_km,
+            level_bands
+                .iter()
+                .map(|band| CompiledIntensityBand {
+                    min: band.min,
+                    max: band.max,
+                    interruption_level: band.interruption_level,
+                })
+                .collect(),
+        ),
+        AlertRule::Tsunami {
+            min_severity,
+            level_bands,
+            ..
+        } => (
+            0.0,
+            *min_severity,
+            20_000.0,
+            level_bands
+                .iter()
+                .map(|band| CompiledIntensityBand {
+                    min: band.min,
+                    max: band.max,
+                    interruption_level: band.interruption_level,
+                })
+                .collect(),
+        ),
         AlertRule::Typhoon {
             max_center_distance_km,
+            level_bands,
             ..
-        } => (0.0, 0, *max_center_distance_km, Vec::new()),
+        } => (
+            0.0,
+            0,
+            *max_center_distance_km,
+            level_bands
+                .iter()
+                .map(|band| CompiledIntensityBand {
+                    min: band.min,
+                    max: band.max,
+                    interruption_level: band.interruption_level,
+                })
+                .collect(),
+        ),
     };
     let (wildcard_source, source_mask) = match rule.sources() {
         SourceSelection::All => (true, 0),

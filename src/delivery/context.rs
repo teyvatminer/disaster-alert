@@ -262,6 +262,8 @@ pub(crate) enum NotificationRuleSnapshot {
         sources: NotificationSourcesSnapshot,
         #[serde(rename = "m")]
         min_magnitude: f64,
+        #[serde(rename = "b", default = "default_notification_level_bands")]
+        level_bands: Vec<NotificationIntensityBandSnapshot>,
     },
     WeatherWarning {
         #[serde(rename = "s")]
@@ -270,18 +272,24 @@ pub(crate) enum NotificationRuleSnapshot {
         min_severity: u8,
         #[serde(rename = "r")]
         fallback_radius_km: f64,
+        #[serde(rename = "b", default = "default_notification_level_bands")]
+        level_bands: Vec<NotificationIntensityBandSnapshot>,
     },
     Tsunami {
         #[serde(rename = "s")]
         sources: NotificationSourcesSnapshot,
         #[serde(rename = "v")]
         min_severity: u8,
+        #[serde(rename = "b", default = "default_notification_level_bands")]
+        level_bands: Vec<NotificationIntensityBandSnapshot>,
     },
     Typhoon {
         #[serde(rename = "s")]
         sources: NotificationSourcesSnapshot,
         #[serde(rename = "r")]
         max_center_distance_km: f64,
+        #[serde(rename = "b", default = "default_notification_level_bands")]
+        level_bands: Vec<NotificationIntensityBandSnapshot>,
     },
 }
 
@@ -537,32 +545,52 @@ impl NotificationRuleSnapshot {
             AlertRule::EarthquakeReport {
                 sources,
                 min_magnitude,
+                level_bands,
             } => Self::EarthquakeReport {
                 sources: NotificationSourcesSnapshot::from_sources(sources),
                 min_magnitude: *min_magnitude,
+                level_bands: level_bands
+                    .iter()
+                    .map(NotificationIntensityBandSnapshot::from_band)
+                    .collect(),
             },
             AlertRule::WeatherWarning {
                 sources,
                 min_severity,
                 fallback_radius_km,
+                level_bands,
             } => Self::WeatherWarning {
                 sources: NotificationSourcesSnapshot::from_sources(sources),
                 min_severity: *min_severity,
                 fallback_radius_km: *fallback_radius_km,
+                level_bands: level_bands
+                    .iter()
+                    .map(NotificationIntensityBandSnapshot::from_band)
+                    .collect(),
             },
             AlertRule::Tsunami {
                 sources,
                 min_severity,
+                level_bands,
             } => Self::Tsunami {
                 sources: NotificationSourcesSnapshot::from_sources(sources),
                 min_severity: *min_severity,
+                level_bands: level_bands
+                    .iter()
+                    .map(NotificationIntensityBandSnapshot::from_band)
+                    .collect(),
             },
             AlertRule::Typhoon {
                 sources,
                 max_center_distance_km,
+                level_bands,
             } => Self::Typhoon {
                 sources: NotificationSourcesSnapshot::from_sources(sources),
                 max_center_distance_km: *max_center_distance_km,
+                level_bands: level_bands
+                    .iter()
+                    .map(NotificationIntensityBandSnapshot::from_band)
+                    .collect(),
             },
         }
     }
@@ -587,6 +615,21 @@ impl NotificationIntensityBandSnapshot {
             interruption_level: band.interruption_level,
         }
     }
+}
+
+fn default_notification_level_bands() -> Vec<NotificationIntensityBandSnapshot> {
+    vec![
+        NotificationIntensityBandSnapshot {
+            min: 0,
+            max: 2,
+            interruption_level: InterruptionLevel::Passive,
+        },
+        NotificationIntensityBandSnapshot {
+            min: 3,
+            max: 4,
+            interruption_level: InterruptionLevel::Active,
+        },
+    ]
 }
 
 impl NotificationTimingSnapshot {
@@ -704,17 +747,20 @@ fn validate_rule(category: DisasterCategory, rule: &NotificationRuleSnapshot) ->
         NotificationRuleSnapshot::EarthquakeReport {
             sources,
             min_magnitude,
+            level_bands,
         } => {
             anyhow::ensure!(
                 min_magnitude.is_finite() && (0.0..=10.0).contains(min_magnitude),
                 "invalid magnitude rule"
             );
+            validate_snapshot_bands(level_bands, 4, false, "invalid level rule")?;
             (DisasterCategory::EarthquakeReport, sources)
         }
         NotificationRuleSnapshot::WeatherWarning {
             sources,
             min_severity,
             fallback_radius_km,
+            level_bands,
         } => {
             anyhow::ensure!(
                 (1..=4).contains(min_severity)
@@ -722,24 +768,29 @@ fn validate_rule(category: DisasterCategory, rule: &NotificationRuleSnapshot) ->
                     && (1.0..=2_000.0).contains(fallback_radius_km),
                 "invalid weather rule"
             );
+            validate_snapshot_bands(level_bands, 4, false, "invalid level rule")?;
             (DisasterCategory::WeatherWarning, sources)
         }
         NotificationRuleSnapshot::Tsunami {
             sources,
             min_severity,
+            level_bands,
         } => {
             anyhow::ensure!((1..=4).contains(min_severity), "invalid tsunami rule");
+            validate_snapshot_bands(level_bands, 4, false, "invalid level rule")?;
             (DisasterCategory::Tsunami, sources)
         }
         NotificationRuleSnapshot::Typhoon {
             sources,
             max_center_distance_km,
+            level_bands,
         } => {
             anyhow::ensure!(
                 max_center_distance_km.is_finite()
                     && (1.0..=3_000.0).contains(max_center_distance_km),
                 "invalid typhoon rule"
             );
+            validate_snapshot_bands(level_bands, 4, false, "invalid level rule")?;
             (DisasterCategory::Typhoon, sources)
         }
     };
@@ -755,6 +806,26 @@ fn validate_rule(category: DisasterCategory, rule: &NotificationRuleSnapshot) ->
             "invalid notification sources"
         );
     }
+    Ok(())
+}
+
+fn validate_snapshot_bands(
+    bands: &[NotificationIntensityBandSnapshot],
+    max_value: u8,
+    allow_critical: bool,
+    message: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !bands.is_empty()
+            && bands.len() <= 3
+            && bands
+                .iter()
+                .all(|band| band.min <= band.max
+                    && band.max <= max_value
+                    && (allow_critical
+                        || band.interruption_level != InterruptionLevel::Critical)),
+        "{message}"
+    );
     Ok(())
 }
 

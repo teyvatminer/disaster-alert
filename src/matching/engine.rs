@@ -132,14 +132,18 @@ fn match_compiled_with_context(
         } else {
             0.0
         };
+        let band_value = if event.category == DisasterCategory::EarthquakeWarning {
+            estimated.round() as u8
+        } else {
+            event.level
+        };
         let interruption_level = if rule.intensity_bands.is_empty() {
             bark_level(event.level)
         } else {
-            let value = estimated.round() as u8;
             let Some(band) = rule
                 .intensity_bands
                 .iter()
-                .find(|band| value >= band.min && value <= band.max)
+                .find(|band| band_value >= band.min && band_value <= band.max)
             else {
                 continue;
             };
@@ -225,8 +229,6 @@ fn regions_intersect(left: &[RegionId], right: &[RegionId]) -> bool {
 
 fn bark_level(level: u8) -> InterruptionLevel {
     if level >= 3 {
-        InterruptionLevel::Critical
-    } else if level >= 2 {
         InterruptionLevel::Active
     } else {
         InterruptionLevel::Passive

@@ -85,24 +85,33 @@ pub struct AdministrativeRegion {
 pub enum AlertRule {
     EarthquakeWarning {
         sources: SourceSelection,
+        #[serde(default = "default_earthquake_warning_bands")]
         estimated_intensity_bands: Vec<IntensityBand>,
     },
     EarthquakeReport {
         sources: SourceSelection,
         min_magnitude: f64,
+        #[serde(default = "default_event_level_bands")]
+        level_bands: Vec<IntensityBand>,
     },
     WeatherWarning {
         sources: SourceSelection,
         min_severity: u8,
         fallback_radius_km: f64,
+        #[serde(default = "default_event_level_bands")]
+        level_bands: Vec<IntensityBand>,
     },
     Tsunami {
         sources: SourceSelection,
         min_severity: u8,
+        #[serde(default = "default_event_level_bands")]
+        level_bands: Vec<IntensityBand>,
     },
     Typhoon {
         sources: SourceSelection,
         max_center_distance_km: f64,
+        #[serde(default = "default_event_level_bands")]
+        level_bands: Vec<IntensityBand>,
     },
 }
 
@@ -132,40 +141,28 @@ impl AlertRule {
         match category {
             DisasterCategory::EarthquakeWarning => Self::EarthquakeWarning {
                 sources,
-                estimated_intensity_bands: vec![
-                    IntensityBand {
-                        min: 1,
-                        max: 1,
-                        interruption_level: InterruptionLevel::Passive,
-                    },
-                    IntensityBand {
-                        min: 2,
-                        max: 2,
-                        interruption_level: InterruptionLevel::Active,
-                    },
-                    IntensityBand {
-                        min: 3,
-                        max: 7,
-                        interruption_level: InterruptionLevel::Critical,
-                    },
-                ],
+                estimated_intensity_bands: default_earthquake_warning_bands(),
             },
             DisasterCategory::EarthquakeReport => Self::EarthquakeReport {
                 sources,
                 min_magnitude: 4.5,
+                level_bands: default_event_level_bands(),
             },
             DisasterCategory::WeatherWarning => Self::WeatherWarning {
                 sources,
                 min_severity: 2,
                 fallback_radius_km: 100.0,
+                level_bands: default_event_level_bands(),
             },
             DisasterCategory::Tsunami => Self::Tsunami {
                 sources,
                 min_severity: 2,
+                level_bands: default_event_level_bands(),
             },
             DisasterCategory::Typhoon => Self::Typhoon {
                 sources,
                 max_center_distance_km: 300.0,
+                level_bands: default_event_level_bands(),
             },
         }
     }
@@ -333,35 +330,48 @@ fn validate_alert(alert: &AlertRule) -> Result<(), String> {
         AlertRule::EarthquakeWarning {
             estimated_intensity_bands,
             ..
-        } => validate_intensity_bands(estimated_intensity_bands),
-        AlertRule::EarthquakeReport { min_magnitude, .. } => {
-            if min_magnitude.is_finite() && (0.0..=10.0).contains(min_magnitude) {
-                Ok(())
-            } else {
+        } => validate_bands(estimated_intensity_bands, 7, "地震预警烈度", true),
+        AlertRule::EarthquakeReport {
+            min_magnitude,
+            level_bands,
+            ..
+        } => {
+            if !min_magnitude.is_finite() || !(0.0..=10.0).contains(min_magnitude) {
                 Err("地震信息最低震级必须在 0 到 10 之间".to_string())
+            } else {
+                validate_bands(level_bands, 4, "地震速报等级", false)
             }
         }
         AlertRule::WeatherWarning {
             min_severity,
             fallback_radius_km,
+            level_bands,
             ..
         } => {
             validate_severity(*min_severity)?;
-            if fallback_radius_km.is_finite() && (1.0..=2_000.0).contains(fallback_radius_km) {
-                Ok(())
-            } else {
+            if !fallback_radius_km.is_finite() || !(1.0..=2_000.0).contains(fallback_radius_km) {
                 Err("气象预警回退半径必须在 1 到 2000 公里之间".to_string())
+            } else {
+                validate_bands(level_bands, 4, "气象预警等级", false)
             }
         }
-        AlertRule::Tsunami { min_severity, .. } => validate_severity(*min_severity),
+        AlertRule::Tsunami {
+            min_severity,
+            level_bands,
+            ..
+        } => {
+            validate_severity(*min_severity)?;
+            validate_bands(level_bands, 4, "海啸预警等级", false)
+        }
         AlertRule::Typhoon {
             max_center_distance_km,
+            level_bands,
             ..
         } => {
             if max_center_distance_km.is_finite()
                 && (1.0..=3_000.0).contains(max_center_distance_km)
             {
-                Ok(())
+                validate_bands(level_bands, 4, "台风信息等级", false)
             } else {
                 Err("台风中心最大距离必须在 1 到 3000 公里之间".to_string())
             }
@@ -391,29 +401,72 @@ fn validate_sources(category: DisasterCategory, sources: &SourceSelection) -> Re
     Ok(())
 }
 
-fn validate_intensity_bands(bands: &[IntensityBand]) -> Result<(), String> {
+fn validate_bands(
+    bands: &[IntensityBand],
+    max_value: u8,
+    label: &str,
+    allow_critical: bool,
+) -> Result<(), String> {
     if bands.is_empty() || bands.len() > 3 {
-        return Err("地震预警烈度规则数量必须在 1 到 3 条之间".to_string());
+        return Err(format!("{label}规则数量必须在 1 到 3 条之间"));
     }
     let mut levels = HashSet::new();
     let mut covered = HashSet::new();
     for band in bands {
-        if band.min > band.max || band.max > 7 {
-            return Err("地震预警烈度范围必须在 0 到 7 之间".to_string());
+        if band.min > band.max || band.max > max_value {
+            return Err(format!("{label}范围必须在 0 到 {max_value} 之间"));
         }
         if !levels.insert(band.interruption_level) {
             return Err("每个 Bark 中断级别只能配置一条烈度规则".to_string());
         }
-        if band.interruption_level == InterruptionLevel::Critical && band.max != 7 {
-            return Err("critical 烈度规则必须覆盖到烈度 7".to_string());
+        if band.interruption_level == InterruptionLevel::Critical && !allow_critical {
+            return Err(format!("{label}规则不能使用 Critical 通知级别"));
         }
-        for intensity in band.min..=band.max {
-            if !covered.insert(intensity) {
-                return Err("地震预警烈度范围不能重叠".to_string());
+        if band.interruption_level == InterruptionLevel::Critical && band.max != max_value {
+            return Err(format!("critical 规则必须覆盖到 {max_value}"));
+        }
+        for value in band.min..=band.max {
+            if !covered.insert(value) {
+                return Err(format!("{label}范围不能重叠"));
             }
         }
     }
     Ok(())
+}
+
+fn default_earthquake_warning_bands() -> Vec<IntensityBand> {
+    vec![
+        IntensityBand {
+            min: 1,
+            max: 1,
+            interruption_level: InterruptionLevel::Passive,
+        },
+        IntensityBand {
+            min: 2,
+            max: 2,
+            interruption_level: InterruptionLevel::Active,
+        },
+        IntensityBand {
+            min: 3,
+            max: 7,
+            interruption_level: InterruptionLevel::Critical,
+        },
+    ]
+}
+
+fn default_event_level_bands() -> Vec<IntensityBand> {
+    vec![
+        IntensityBand {
+            min: 0,
+            max: 2,
+            interruption_level: InterruptionLevel::Passive,
+        },
+        IntensityBand {
+            min: 3,
+            max: 4,
+            interruption_level: InterruptionLevel::Active,
+        },
+    ]
 }
 
 fn validate_severity(severity: u8) -> Result<(), String> {
@@ -533,6 +586,7 @@ mod tests {
                 ids: vec!["fanstudio.weatheralarm".to_string()],
             },
             min_severity: 2,
+            level_bands: default_event_level_bands(),
         }]);
 
         assert!(subscription.validate().is_err());
@@ -639,6 +693,7 @@ mod tests {
         let empty_sources = subscription(vec![AlertRule::Tsunami {
             sources: SourceSelection::Include { ids: Vec::new() },
             min_severity: 2,
+            level_bands: default_event_level_bands(),
         }]);
 
         assert!(duplicate.validate().is_err());
