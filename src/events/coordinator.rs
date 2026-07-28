@@ -295,14 +295,12 @@ mod tests {
                 ..EventPolicy::default()
             },
         );
-        let mut first = test_event("fanstudio.cenc", "same-warning");
-        first.category = DisasterCategory::EarthquakeWarning;
+        let first = earthquake_warning_event("same-warning");
         storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![first], None)?;
         let first_job = coordinator.process_next()?.context("missing first job")?;
         commit_matched_job(&storage, &first_job)?;
 
-        let mut update = test_event("fanstudio.cenc", "same-warning");
-        update.category = DisasterCategory::EarthquakeWarning;
+        let mut update = earthquake_warning_event("same-warning");
         update.report_num = 2;
         update.revision = "2".to_string();
         storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![update], None)?;
@@ -327,14 +325,12 @@ mod tests {
                 ..EventPolicy::default()
             },
         );
-        let mut first = test_event("fanstudio.cenc", "cancel-warning");
-        first.category = DisasterCategory::EarthquakeWarning;
+        let first = earthquake_warning_event("cancel-warning");
         storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![first], None)?;
         let first_job = coordinator.process_next()?.context("missing first job")?;
         commit_matched_job(&storage, &first_job)?;
 
-        let mut cancel = test_event("fanstudio.cenc", "cancel-warning");
-        cancel.category = DisasterCategory::EarthquakeWarning;
+        let mut cancel = earthquake_warning_event("cancel-warning");
         cancel.report_num = 2;
         cancel.revision = "2".to_string();
         cancel.cancel = true;
@@ -458,5 +454,11 @@ mod tests {
             cancel: false,
             training: false,
         }
+    }
+
+    fn earthquake_warning_event(event_id: &str) -> DisasterEvent {
+        let mut event = test_event("fanstudio.cea", event_id);
+        event.category = DisasterCategory::EarthquakeWarning;
+        event
     }
 }
