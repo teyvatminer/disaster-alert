@@ -121,6 +121,13 @@ impl EventCoordinator {
         if event.cancel || current.is_none() {
             return true;
         }
+        if event.category == DisasterCategory::EarthquakeWarning
+            && current.is_some_and(|incident| {
+                incident.has_matched_subscribers || incident.pending_match_jobs > 0
+            })
+        {
+            return false;
+        }
         if !self.policy.push_updates {
             return false;
         }
@@ -273,6 +280,67 @@ mod tests {
             .context("missing updated incident")?;
         anyhow::ensure!(incident.stream_watermarks[0].report_num == 2);
         anyhow::ensure!(storage.pending_match_jobs(1)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn earthquake_warning_update_after_initial_match_does_not_create_another_match_job()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let storage = FjallStorage::open(directory.path())?;
+        let coordinator = EventCoordinator::with_policy(
+            storage.clone(),
+            EventPolicy {
+                push_updates: true,
+                ..EventPolicy::default()
+            },
+        );
+        let mut first = test_event("fanstudio.cenc", "same-warning");
+        first.category = DisasterCategory::EarthquakeWarning;
+        storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![first], None)?;
+        let first_job = coordinator.process_next()?.context("missing first job")?;
+        commit_matched_job(&storage, &first_job)?;
+
+        let mut update = test_event("fanstudio.cenc", "same-warning");
+        update.category = DisasterCategory::EarthquakeWarning;
+        update.report_num = 2;
+        update.revision = "2".to_string();
+        storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![update], None)?;
+
+        anyhow::ensure!(coordinator.process_next()?.is_none());
+        let incident = storage
+            .incident(&first_job.incident_id)?
+            .context("missing updated incident")?;
+        anyhow::ensure!(incident.stream_watermarks[0].report_num == 2);
+        anyhow::ensure!(storage.pending_match_jobs(1)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn earthquake_warning_cancel_after_initial_match_still_creates_match_job() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let storage = FjallStorage::open(directory.path())?;
+        let coordinator = EventCoordinator::with_policy(
+            storage.clone(),
+            EventPolicy {
+                push_updates: true,
+                ..EventPolicy::default()
+            },
+        );
+        let mut first = test_event("fanstudio.cenc", "cancel-warning");
+        first.category = DisasterCategory::EarthquakeWarning;
+        storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![first], None)?;
+        let first_job = coordinator.process_next()?.context("missing first job")?;
+        commit_matched_job(&storage, &first_job)?;
+
+        let mut cancel = test_event("fanstudio.cenc", "cancel-warning");
+        cancel.category = DisasterCategory::EarthquakeWarning;
+        cancel.report_num = 2;
+        cancel.revision = "2".to_string();
+        cancel.cancel = true;
+        storage.ingest_with_cursor(ProviderChannel::FanStudio, vec![cancel], None)?;
+
+        anyhow::ensure!(coordinator.process_next()?.is_some());
         Ok(())
     }
 

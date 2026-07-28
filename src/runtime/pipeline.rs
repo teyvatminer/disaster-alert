@@ -36,6 +36,7 @@ const DELIVERY_SHARDS: u64 = 64;
 const MAX_RETRY_ATTEMPTS: u16 = 12;
 const MAX_RETRY_AGE_MS: i64 = 24 * 60 * 60 * 1_000;
 const COUNTDOWN_COMMAND_CAPACITY: usize = 4_096;
+const EARTHQUAKE_COUNTDOWN_WINDOW_SECONDS: i64 = 10;
 
 #[derive(Clone)]
 pub(crate) struct EventRuntime {
@@ -1268,22 +1269,20 @@ impl EventRuntime {
             .channel(event.channel)
             .record_notification(result.is_ok());
         result?;
-        if event.category == DisasterCategory::EarthquakeWarning && !event.cancel {
-            if let Some(timing) = timing.filter(|timing| {
-                try_now_millis()
-                    .is_ok_and(|now_ms| remaining_seconds(timing.s_arrival_at_ms, now_ms) > 0)
-            }) {
-                self.queue_countdown_command(CountdownCommand::Schedule(EarthquakeCountdown {
-                    key: countdown_key,
-                    subscription_id: row.subscription_id,
-                    generation: row.generation,
-                    recipient: recipient.to_countdown_recipient(),
-                    event: Arc::clone(event),
-                    timing,
-                    detail_url: context.url,
-                }))
-                .await;
-            }
+        if let Some(timing) = timing.filter(|timing| {
+            try_now_millis()
+                .is_ok_and(|now_ms| should_schedule_countdown(event, row, timing, now_ms))
+        }) {
+            self.queue_countdown_command(CountdownCommand::Schedule(EarthquakeCountdown {
+                key: countdown_key,
+                subscription_id: row.subscription_id,
+                generation: row.generation,
+                recipient: recipient.to_countdown_recipient(),
+                event: Arc::clone(event),
+                timing,
+                detail_url: context.url,
+            }))
+            .await;
         }
         Ok(Some(DeliverySuccess {
             row_index,
@@ -1362,9 +1361,23 @@ fn countdown_tick_delay_ms(arrival_at_ms: i64, now_ms: i64) -> i64 {
     let seconds = remaining_seconds(arrival_at_ms, now_ms);
     if seconds == 0 {
         0
+    } else if seconds > EARTHQUAKE_COUNTDOWN_WINDOW_SECONDS {
+        delta_ms.saturating_sub(EARTHQUAKE_COUNTDOWN_WINDOW_SECONDS.saturating_mul(1_000))
     } else {
         delta_ms.saturating_sub(seconds.saturating_sub(1).saturating_mul(1_000))
     }
+}
+
+fn should_schedule_countdown(
+    event: &DisasterEvent,
+    row: &DeliveryRow,
+    timing: &AlertTiming,
+    now_ms: i64,
+) -> bool {
+    event.category == DisasterCategory::EarthquakeWarning
+        && !event.cancel
+        && row.interruption_level == InterruptionLevel::Critical
+        && remaining_seconds(timing.s_arrival_at_ms, now_ms) > 0
 }
 
 fn sanitize_event(mut event: DisasterEvent) -> std::result::Result<DisasterEvent, &'static str> {
@@ -1491,7 +1504,48 @@ mod tests {
         assert_eq!(countdown_tick_delay_ms(10_000, 0), 1_000);
         assert_eq!(countdown_tick_delay_ms(500, 0), 500);
         assert_eq!(countdown_tick_delay_ms(0, 0), 0);
-        assert_eq!(countdown_tick_delay_ms(5_719_500, 0), 500);
+        assert_eq!(countdown_tick_delay_ms(5_719_500, 0), 5_709_500);
+    }
+
+    #[test]
+    fn countdown_is_scheduled_only_for_critical_earthquake_warnings() {
+        let mut event = test_delivery_event(1, "warning");
+        event.category = DisasterCategory::EarthquakeWarning;
+        let timing = AlertTiming {
+            distance_km: 10.0,
+            hypocentral_km: 12.0,
+            estimated_intensity: 3.0,
+            p_arrival_at_ms: 2_000,
+            s_arrival_at_ms: 15_000,
+        };
+        let mut row = DeliveryRow {
+            destination_id: DestinationNumericId(7),
+            subscription_id: SubscriptionId(11),
+            generation: 3,
+            target_ordinal: 2,
+            match_kind: 1,
+            interruption_level: InterruptionLevel::Critical,
+            distance_m: 4_000,
+            intensity_cent: 300,
+        };
+
+        assert!(should_schedule_countdown(&event, &row, &timing, 5_000));
+
+        row.interruption_level = InterruptionLevel::Active;
+        assert!(!should_schedule_countdown(&event, &row, &timing, 5_000));
+
+        row.interruption_level = InterruptionLevel::Passive;
+        assert!(!should_schedule_countdown(&event, &row, &timing, 5_000));
+
+        row.interruption_level = InterruptionLevel::Critical;
+        event.category = DisasterCategory::EarthquakeReport;
+        assert!(!should_schedule_countdown(&event, &row, &timing, 5_000));
+
+        event.category = DisasterCategory::EarthquakeWarning;
+        assert!(!should_schedule_countdown(&event, &row, &timing, 15_000));
+
+        event.cancel = true;
+        assert!(!should_schedule_countdown(&event, &row, &timing, 5_000));
     }
 
     #[test]

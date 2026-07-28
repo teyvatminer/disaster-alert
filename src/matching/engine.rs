@@ -133,7 +133,7 @@ fn match_compiled_with_context(
             0.0
         };
         let band_value = if event.category == DisasterCategory::EarthquakeWarning {
-            estimated.round() as u8
+            crate::utils::intensity::intensity_band_value(estimated)
         } else {
             event.level
         };

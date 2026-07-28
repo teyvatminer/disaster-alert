@@ -16,6 +16,14 @@ pub(crate) fn estimate_intensity(magnitude: f64, distance_km: f64) -> f64 {
     intensity.clamp(0.0, 7.0)
 }
 
+/// 将连续烈度转换为规则档位，规则匹配统一按向下取整处理。
+pub(crate) fn intensity_band_value(intensity: f64) -> u8 {
+    if !intensity.is_finite() {
+        return 0;
+    }
+    intensity.floor().clamp(0.0, 7.0) as u8
+}
+
 fn intensity_coefficients(magnitude: f64) -> (f64, f64, f64, f64) {
     let small = (2.5, 3.8, 12.0, -1.2);
     let medium = (2.5, 3.6, 10.0, -1.3);
@@ -73,6 +81,14 @@ mod tests {
 
         let i4 = estimate_intensity(4.0, 10.0);
         assert!(i4 <= i3);
+    }
+
+    #[test]
+    fn band_value_floors_fractional_intensity() {
+        assert_eq!(intensity_band_value(1.8), 1);
+        assert_eq!(intensity_band_value(2.0), 2);
+        assert_eq!(intensity_band_value(7.9), 7);
+        assert_eq!(intensity_band_value(f64::NAN), 0);
     }
 
     #[test]

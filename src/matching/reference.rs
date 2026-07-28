@@ -79,10 +79,10 @@ pub(crate) fn match_subscription(
                 let hypocentral = (distance_km.mul_add(distance_km, depth * depth)).sqrt();
                 let estimated =
                     crate::utils::intensity::estimate_intensity(event.magnitude?, hypocentral);
-                let rounded = estimated.round() as u8;
+                let band_value = crate::utils::intensity::intensity_band_value(estimated);
                 let Some(band) = estimated_intensity_bands
                     .iter()
-                    .find(|band| rounded >= band.min && rounded <= band.max)
+                    .find(|band| band_value >= band.min && band_value <= band.max)
                 else {
                     continue;
                 };
